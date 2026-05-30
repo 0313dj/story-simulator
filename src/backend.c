@@ -1184,6 +1184,8 @@ static bool load_from_file(const char *name)
             npc_restore_temps(&g_npc_mgr, current_loc);
         }
 
+        map_ensure_location(&g_map, g_env.location.area,
+            g_env.location.district, g_env.location.spot);
         map_locate(&g_map, g_env.location.area,
                    g_env.location.district, g_env.location.spot);
         g_world_ready = true;
@@ -1307,6 +1309,8 @@ static bool load_from_file(const char *name)
         }
         free(json);
 
+        map_ensure_location(&g_map, g_env.location.area,
+            g_env.location.district, g_env.location.spot);
         map_locate(&g_map, g_env.location.area,
                    g_env.location.district, g_env.location.spot);
         g_world_ready = true;
@@ -2726,7 +2730,9 @@ char *backend_create_world(const char *name, const char *age,
     log_info("CREATE_WORLD: after parsing NPCs, npc_count=%d", g_npc_card_count);
     log_info("CREATE_WORLD: calling npc_init...");
     npc_init(&g_npc_mgr);
-    log_info("CREATE_WORLD: npc_init done, calling map_locate...");
+    log_info("CREATE_WORLD: npc_init done, calling map_ensure_location...");
+    map_ensure_location(&g_map, g_env.location.area, g_env.location.district, g_env.location.spot);
+    log_info("CREATE_WORLD: map_ensure_location done, calling map_locate...");
     map_locate(&g_map, g_env.location.area, g_env.location.district, g_env.location.spot);
     log_info("CREATE_WORLD: map_locate done, setting world_ready...");
     g_world_ready = true;
