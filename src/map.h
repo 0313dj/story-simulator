@@ -54,6 +54,9 @@ bool map_remove_point(GameMap *map, int level, const char *name);
 /* 检查指定级别是否存在该名称的地图点 */
 bool map_has_point(const GameMap *map, int level, const char *name);
 
+/* 为所有父级点自动创建默认子级点，避免下钻时地图空白 */
+void map_seed_all_sub_locations(GameMap *map);
+
 /* 推开所有层级中距离过近的点（AI生成坐标可能拥挤） */
 void map_adjust_crowding(GameMap *map);
 

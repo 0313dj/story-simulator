@@ -302,6 +302,52 @@ bool map_has_point(const GameMap *map, int level, const char *name)
 #define MAP_MIN_DIST_L1   60   /* 小地点 */
 #define MAP_MIN_DIST_L0   35   /* 具体地点 */
 
+/* Ensure every parent-level point has at least one child point at the
+   next level down, so drilling in never shows an empty map. */
+void map_seed_all_sub_locations(GameMap *map)
+{
+    MapLevel *l3 = &map->levels[2];
+    MapLevel *l2 = &map->levels[1];
+    MapLevel *l1 = &map->levels[0];
+
+    /* For each L2 (大地点), ensure at least one L1 (小地点) child */
+    for (int i = 0; i < l3->count; i++) {
+        int px = l3->points[i].x;
+        int py = l3->points[i].y;
+        /* Check if any existing L1 point is nearest to this L2 */
+        bool has_child = false;
+        for (int j = 0; j < l2->count; j++) {
+            /* Simple heuristic: if an L1 point is within 250 units of the L2
+               center, consider it a child */
+            int dx = l2->points[j].x - px;
+            int dy = l2->points[j].y - py;
+            if (dx*dx + dy*dy < 250*250) { has_child = true; break; }
+        }
+        if (!has_child) {
+            /* Auto-create a default district using the area name */
+            add_point_near(l2, l3->points[i].name, px, py, 180, 50);
+        }
+    }
+
+    /* For each L1 (小地点), ensure at least one L0 (具体地点) child */
+    for (int i = 0; i < l2->count; i++) {
+        int px = l2->points[i].x;
+        int py = l2->points[i].y;
+        bool has_child = false;
+        for (int j = 0; j < l1->count; j++) {
+            int dx = l1->points[j].x - px;
+            int dy = l1->points[j].y - py;
+            if (dx*dx + dy*dy < 180*180) { has_child = true; break; }
+        }
+        if (!has_child) {
+            /* Auto-create a default spot */
+            char spot_name[MAP_NAME_LEN];
+            snprintf(spot_name, sizeof(spot_name), "%s中心", l2->points[i].name);
+            add_point_near(l1, spot_name, px, py, 150, 35);
+        }
+    }
+}
+
 /* Push apart overlapping points at all levels.
    Called after AI-generated coordinate import to prevent crowding. */
 void map_adjust_crowding(GameMap *map)

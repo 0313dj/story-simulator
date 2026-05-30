@@ -1188,6 +1188,7 @@ static bool load_from_file(const char *name)
             g_env.location.district, g_env.location.spot);
         map_locate(&g_map, g_env.location.area,
                    g_env.location.district, g_env.location.spot);
+        map_seed_all_sub_locations(&g_map);
         map_adjust_crowding(&g_map);
         g_world_ready = true;
         /* Stage 3: initialize NPC brains */
@@ -1314,6 +1315,7 @@ static bool load_from_file(const char *name)
             g_env.location.district, g_env.location.spot);
         map_locate(&g_map, g_env.location.area,
                    g_env.location.district, g_env.location.spot);
+        map_seed_all_sub_locations(&g_map);
         map_adjust_crowding(&g_map);
         g_world_ready = true;
 
@@ -2736,7 +2738,8 @@ char *backend_create_world(const char *name, const char *age,
     map_ensure_location(&g_map, g_env.location.area, g_env.location.district, g_env.location.spot);
     log_info("CREATE_WORLD: map_ensure_location done, calling map_locate...");
     map_locate(&g_map, g_env.location.area, g_env.location.district, g_env.location.spot);
-    map_adjust_crowding(&g_map);  /* fix AI-generated coordinate crowding */
+    map_seed_all_sub_locations(&g_map);  /* auto-create default children */
+    map_adjust_crowding(&g_map);         /* fix AI-generated coordinate crowding */
     log_info("CREATE_WORLD: map_locate done, setting world_ready...");
     g_world_ready = true;
     log_info("CREATE_WORLD: calling npc_brains_init...");
