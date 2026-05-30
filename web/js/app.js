@@ -614,12 +614,17 @@ function mapRenderModal() {
   var allPoints = window._mapAllPoints;
   var visible = mapGetVisible(allPoints, nav);
 
-  var W = 520, H = 420, PAD = 30;
+  /* Zoom scale: level 2=1.0, level 1=1.5, level 0=2.0 */
+  var zoomScale = [2.0, 1.5, 1.0][nav.level] || 1.0;
+  var W = Math.round(520 * zoomScale);
+  var H = Math.round(420 * zoomScale);
+  var PAD = Math.round(30 * zoomScale);
+  var FONT = Math.round(10 * zoomScale);
   var sx = (W - PAD * 2) / 1000;
   var sy = (H - PAD * 2) / 1000;
   var colors = ['#34C759', '#007AFF', '#FF9500']; /* level 0,1,2 */
   var levelNames = ['具体地点', '小地点', '大地点'];
-  var radiusByLevel = [4, 5, 7];
+  var radiusByLevel = [Math.round(4*zoomScale), Math.round(5*zoomScale), Math.round(7*zoomScale)];
 
   /* ── Breadcrumb ── */
   var bcHtml = '';
@@ -631,16 +636,23 @@ function mapRenderModal() {
 
   /* ── Back button + controls ── */
   var ctrlHtml = '<div style="margin-bottom:8px;display:flex;align-items:center;justify-content:center;gap:8px">';
+  /* Zoom out button */
+  if (nav.level < 2) {
+    ctrlHtml += '<button class="btn btn-secondary btn-sm" id="map-zoom-out-btn" title="缩小">&#x2795; 缩小</button>';
+  }
   if (nav.parents.length > 0) {
     ctrlHtml += '<button class="btn btn-secondary btn-sm" id="map-back-btn">&larr; 返回</button>';
-  } else {
-    /* Spacer so layout is consistent */
+  } else if (nav.level >= 2) {
     ctrlHtml += '<span style="width:64px"></span>';
   }
   ctrlHtml += '<span style="font-size:12px;color:var(--text-primary)">';
   ctrlHtml += (bcHtml || '全部大地点');
   ctrlHtml += '</span>';
   ctrlHtml += '<span style="font-size:11px;color:var(--text-muted)">（' + visible.length + '个' + levelNames[nav.level] + '）</span>';
+  /* Zoom in button */
+  if (nav.level > 0) {
+    ctrlHtml += '<button class="btn btn-secondary btn-sm" id="map-zoom-in-btn" title="放大">&#x2795; 放大</button>';
+  }
   if (nav.level < 2) {
     ctrlHtml += '<button class="btn btn-secondary btn-sm" id="map-top-btn" title="回到顶层">&#x21E7; 顶层</button>';
   }
@@ -665,19 +677,20 @@ function mapRenderModal() {
     var canDrill = pt.level > 0 && pt.level === nav.level;
     var cls = canDrill ? 'map-point-drillable' : 'map-point-leaf';
     svg += '<circle cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + radius + '" fill="' + color + '" stroke="#fff" stroke-width="0.6" class="' + cls + '" data-name="' + pt.name + '" data-level="' + pt.level + '" data-x="' + pt.x + '" data-y="' + pt.y + '"/>';
-    svg += '<text x="' + (cx + 9).toFixed(1) + '" y="' + (cy + 4).toFixed(1) + '" fill="' + color + '" font-size="10" style="pointer-events:none;font-weight:500">' + pt.name + '</text>';
+    svg += '<text x="' + (cx + Math.round(9*zoomScale)).toFixed(1) + '" y="' + (cy + Math.round(4*zoomScale)).toFixed(1) + '" fill="' + color + '" font-size="' + FONT + '" style="pointer-events:none;font-weight:500">' + pt.name + '</text>';
   }
   svg += '</svg>';
 
   /* ── Legend ── */
   var legend = '<div style="text-align:center;margin-top:6px;font-size:11px;color:var(--text-muted)">';
   if (nav.level === 2) {
-    legend += '<span style="color:#FF9500">● 大地点</span>  <span style="color:var(--text-muted)">— 点击可下钻查看子地点</span>';
+    legend += '<span style="color:#FF9500">● 大地点</span>  <span style="color:var(--text-muted)">— 点击下钻 · 滚轮缩放</span>';
   } else if (nav.level === 1) {
-    legend += '<span style="color:#007AFF">● 小地点</span>  <span style="color:var(--text-muted)">— 点击可下钻查看子地点</span>';
+    legend += '<span style="color:#007AFF">● 小地点</span>  <span style="color:var(--text-muted)">— 点击下钻 · 滚轮缩放</span>';
   } else {
-    legend += '<span style="color:#34C759">● 具体地点</span>  <span style="color:var(--text-muted)">— 终点层级</span>';
+    legend += '<span style="color:#34C759">● 具体地点</span>  <span style="color:var(--text-muted)">— 终点层级 · 滚轮缩小</span>';
   }
+  legend += '  <span style="color:var(--text-muted)"> 缩放: ' + zoomScale.toFixed(1) + 'x</span>';
   legend += '</div>';
 
   /* ── Current location indicator ── */
@@ -700,7 +713,7 @@ function mapRenderModal() {
   }
   delHtml += '</div>';
 
-  var html = ctrlHtml + '<div style="text-align:center">' + svg + '</div>' + legend + delHtml;
+  var html = ctrlHtml + '<div style="overflow:auto;max-height:450px;text-align:center;border-radius:8px">' + svg + '</div>' + legend + delHtml;
 
   var title = '地图 — ' + levelNames[nav.level];
   showModal(title, html, true);
@@ -711,6 +724,32 @@ function mapRenderModal() {
     if (backBtn) {
       backBtn.onclick = function() {
         nav.parents.pop();
+        nav.level = Math.min(2, nav.level + 1);
+        mapRenderModal();
+      };
+    }
+
+    var zoomInBtn = document.getElementById('map-zoom-in-btn');
+    if (zoomInBtn) {
+      zoomInBtn.onclick = function() {
+        if (nav.level > 0) {
+          /* Zoom in: try current parent's children, or nearest point under center */
+          var allPts = mapGetVisible(allPoints, nav);
+          if (allPts.length > 0) {
+            nav.parents.push({ name: allPts[0].name, level: nav.level, x: allPts[0].x, y: allPts[0].y });
+          }
+          nav.level = Math.max(0, nav.level - 1);
+          mapRenderModal();
+        }
+      };
+    }
+
+    var zoomOutBtn = document.getElementById('map-zoom-out-btn');
+    if (zoomOutBtn) {
+      zoomOutBtn.onclick = function() {
+        if (nav.parents.length > 0) {
+          nav.parents.pop();
+        }
         nav.level = Math.min(2, nav.level + 1);
         mapRenderModal();
       };
@@ -727,6 +766,30 @@ function mapRenderModal() {
 
     var svgEl = document.getElementById('map-svg');
     if (svgEl) {
+      /* ── Mouse wheel zoom ── */
+      svgEl.onwheel = function(e) {
+        e.preventDefault();
+        if (e.deltaY < 0) {
+          /* Scroll up = zoom in */
+          if (nav.level > 0) {
+            var allPts = mapGetVisible(allPoints, nav);
+            if (allPts.length > 0) {
+              nav.parents.push({ name: allPts[0].name, level: nav.level, x: allPts[0].x, y: allPts[0].y });
+            }
+            nav.level = Math.max(0, nav.level - 1);
+            mapRenderModal();
+          }
+        } else {
+          /* Scroll down = zoom out */
+          if (nav.parents.length > 0) {
+            nav.parents.pop();
+          }
+          nav.level = Math.min(2, nav.level + 1);
+          mapRenderModal();
+        }
+        return false;
+      };
+
       var circles = svgEl.querySelectorAll('circle[data-level]');
       for (var k = 0; k < circles.length; k++) {
         (function(circle) {

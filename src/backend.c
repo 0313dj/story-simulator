@@ -729,8 +729,17 @@ static int json_parse_array(const char *json, const char *key,
         if (*p == '{') {
             cb(p, ud, count);
             count++;
-            p = strchr(p, '}');
-            if (!p) break;
+            /* Find matching '}' accounting for nested objects/arrays.
+               strchr(p, '}') would match inner-object closing braces,
+               causing parse corruption for NPCs with attrs/skills/items. */
+            int depth = 1;
+            p++;
+            while (*p && depth > 0) {
+                if (*p == '{' || *p == '[') depth++;
+                else if (*p == '}' || *p == ']') depth--;
+                if (depth > 0) p++;
+            }
+            if (!*p) break;
         }
         p++;
     }
@@ -785,6 +794,49 @@ static void parse_relation_cb(const char *obj, void *ud, int idx)
     char type_str[64] = {0};
     json_get_str(obj, "type", type_str, sizeof(type_str));
     r->type = type_str[0] ? parse_relation_type_str(type_str) : REL_STRANGER;
+}
+
+/* Context for parse_present_npc_cb — tracks count so we know whether
+   presentNpcs was non-empty and can skip npc_restore_temps fallback. */
+typedef struct {
+    NpcManager *mgr;
+    int count;  /* number of entries (spawns + temps) restored */
+} PresentNpcCtx;
+
+/* Parse one entry in the "presentNpcs" array — restore spawn + temp state.
+   This is the authoritative source for who is at the current location. */
+static void parse_present_npc_cb(const char *obj, void *ud, int idx)
+{
+    PresentNpcCtx *ctx = (PresentNpcCtx *)ud;
+    NpcManager *mgr = ctx->mgr;
+    (void)idx;
+
+    /* Temp entries have a "desc" field; spawns don't. */
+    char desc_check[MAX_NPC_DESC] = {0};
+    json_get_str(obj, "desc", desc_check, sizeof(desc_check));
+
+    if (desc_check[0]) {
+        /* Temp NPC — restore directly into active temps */
+        if (mgr->temp_count < MAX_TEMP_NPCS) {
+            TempNpc *t = &mgr->temps[mgr->temp_count];
+            memset(t, 0, sizeof(*t));
+            json_get_str(obj, "name", t->name, MAX_NPC_NAME);
+            json_get_str(obj, "desc", t->description, MAX_NPC_DESC);
+            if (t->name[0]) { mgr->temp_count++; ctx->count++; }
+        }
+        return;
+    }
+
+    /* Card NPC spawn */
+    if (mgr->spawn_count < MAX_TEMP_NPCS) {
+        NpcSpawn *s = &mgr->spawns[mgr->spawn_count];
+        memset(s, 0, sizeof(*s));
+        json_get_str(obj, "name", s->name, MAX_NPC_NAME);
+        json_get_int(obj, "affinity", &s->player_affinity);
+        s->present = true;
+        s->category = 0;  /* MUST — was present when saved */
+        if (s->name[0]) { mgr->spawn_count++; ctx->count++; }
+    }
 }
 
 static void parse_npc_obj(const char *obj, void *ud, int idx)
@@ -875,6 +927,7 @@ static bool load_from_file(const char *name)
         memset(&g_player, 0, sizeof(g_player));
         g_npc_card_count = 0;
         map_init(&g_map);
+        npc_init(&g_npc_mgr);  /* init before loading cache into it */
         parse_player_scope(ch_json);
         free(ch_json);
 
@@ -891,6 +944,7 @@ static bool load_from_file(const char *name)
         }
 
         /* World (schema_version + location + environment + map + temp cache) */
+        PresentNpcCtx present_ctx = { &g_npc_mgr, 0 };
         char *wo_json = slurp_file(wo_path);
         if (wo_json) {
             /* Read schema version (may be absent in old saves) */
@@ -907,6 +961,8 @@ static bool load_from_file(const char *name)
                 json_get_str(lscope, "area",     g_env.location.area, 32);
                 json_get_str(lscope, "district", g_env.location.district, 32);
                 json_get_str(lscope, "spot",     g_env.location.spot, 32);
+                /* Restore spawns + temps from presentNpcs (authoritative) */
+                json_parse_array(lscope, "presentNpcs", parse_present_npc_cb, &present_ctx);
             }
             /* environment */
             const char *escope = extract_sub_obj(wo_json, "environment");
@@ -1120,8 +1176,9 @@ static bool load_from_file(const char *name)
         for (int i = 0; i < g_npc_card_count; i++)
             mem_init(&g_npc_cards[i].memory);
 
-        npc_init(&g_npc_mgr);
-        {
+        /* Restore temps from cache ONLY if presentNpcs wasn't parsed
+           (old saves may lack presentNpcs; cache is the fallback). */
+        if (present_ctx.count == 0) {
             char current_loc[MAX_NPC_LOC];
             npc_make_location_key(&g_env.location, current_loc, sizeof(current_loc));
             npc_restore_temps(&g_npc_mgr, current_loc);
@@ -1132,7 +1189,9 @@ static bool load_from_file(const char *name)
         g_world_ready = true;
         /* Stage 3: initialize NPC brains */
         npc_brains_init();
-        log_info("load: 成功(folder) — %s", g_player.name);
+        log_info("load: 成功(folder) — %s (NPC卡:%d 在场:%d 临时:%d)",
+                 g_player.name, g_npc_card_count,
+                 g_npc_mgr.spawn_count, g_npc_mgr.temp_count);
         return true;
     }
 
@@ -1188,6 +1247,9 @@ static bool load_from_file(const char *name)
         memset(&g_player, 0, sizeof(g_player));
         g_npc_card_count = 0;
         map_init(&g_map);
+        npc_init(&g_npc_mgr);  /* init before loading cache into it */
+
+        PresentNpcCtx present_ctx = { &g_npc_mgr, 0 };
 
         const char *pscope = extract_sub_obj(json, "character");
         if (!pscope) pscope = extract_sub_obj(json, "player");
@@ -1201,6 +1263,8 @@ static bool load_from_file(const char *name)
             json_get_str(lscope, "area",     g_env.location.area, 32);
             json_get_str(lscope, "district", g_env.location.district, 32);
             json_get_str(lscope, "spot",     g_env.location.spot, 32);
+            /* Restore spawns + temps from presentNpcs (authoritative) */
+            json_parse_array(lscope, "presentNpcs", parse_present_npc_cb, &present_ctx);
         }
         /* environment */
         const char *escope = extract_sub_obj(json, "environment");
@@ -1234,9 +1298,9 @@ static bool load_from_file(const char *name)
         for (int i = 0; i < g_npc_card_count; i++)
             mem_init(&g_npc_cards[i].memory);
 
-        npc_init(&g_npc_mgr);
         npc_parse_cache_from_json(&g_npc_mgr, json);
-        {
+        /* Restore temps from cache ONLY if presentNpcs wasn't parsed */
+        if (present_ctx.count == 0) {
             char current_loc[MAX_NPC_LOC];
             npc_make_location_key(&g_env.location, current_loc, sizeof(current_loc));
             npc_restore_temps(&g_npc_mgr, current_loc);

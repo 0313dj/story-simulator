@@ -635,6 +635,20 @@ void re_apply_effects(const Rule *rule, CharacterCard *entity,
             } else if (strcmp(e->target, "age") == 0) {
                 entity->age = e->int_value;
                 if (entity->age < 0) entity->age = 0;
+            } else if (strncmp(e->target, "skill.", 6) == 0) {
+                /* skill.技能名 = level */
+                cc_add_skill(entity, e->target + 6, e->int_value);
+            } else {
+                /* Check if it matches a bare skill name on this entity */
+                int found = 0;
+                for (int j = 0; j < entity->skill_count; j++) {
+                    if (strcmp(entity->skills[j].name, e->target) == 0) {
+                        cc_add_skill(entity, e->target, e->int_value);
+                        found = 1;
+                        break;
+                    }
+                }
+                (void)found; /* field not recognized, silently skip */
             }
             break;
 
@@ -658,6 +672,32 @@ void re_apply_effects(const Rule *rule, CharacterCard *entity,
                 cc_set_attributes(entity, entity->attr.appearance,
                     entity->attr.constitution,
                     entity->attr.intelligence + e->int_value);
+            } else if (strncmp(e->target, "skill.", 6) == 0) {
+                /* skill.技能名 +delta */
+                const char *skname = e->target + 6;
+                int cur_level = 0;
+                int found = 0;
+                for (int j = 0; j < entity->skill_count; j++) {
+                    if (strcmp(entity->skills[j].name, skname) == 0) {
+                        cur_level = entity->skills[j].level;
+                        found = 1;
+                        break;
+                    }
+                }
+                cc_add_skill(entity, skname, cur_level + e->int_value);
+                (void)found;
+            } else {
+                /* Check if it matches a bare skill name on this entity */
+                int found = 0;
+                for (int j = 0; j < entity->skill_count; j++) {
+                    if (strcmp(entity->skills[j].name, e->target) == 0) {
+                        cc_add_skill(entity, e->target,
+                            entity->skills[j].level + e->int_value);
+                        found = 1;
+                        break;
+                    }
+                }
+                (void)found;
             }
             break;
 

@@ -4,6 +4,13 @@ bin/sim.exe
 bin/sim.log
 bin/saves/
 
+# Runtime dependencies (not source — user must provide)
+bin/*.dll
+bin/cacert.pem
+
+# Build output copy of web/ (source is web/)
+bin/web/
+
 # Sensitive / runtime-generated
 bin/secrets.dat
 saves/

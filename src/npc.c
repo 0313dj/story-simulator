@@ -182,11 +182,26 @@ static void apply_create_line(CharacterCard *card, const char *line)
     if (strncmp(key, "skill.", 6) == 0) {
         int lv = atoi(val);
         if (is_delta < 0) lv = -lv;
+
+        /* Validate skill level range: AI should output values within 0-100.
+           cc_add_skill will clamp, but we warn here so developers can
+           detect when the AI is not conforming to the spec. */
+        if (lv < 0 || lv > 100) {
+            log_warn("apply_create_line: skill '%s' level %d out of range [0,100] "
+                     "(AI output violation, will be clamped)", key + 6, lv);
+        }
+
         if (is_delta > 0) {
             /* skill.xxx+delta: find existing and add */
             for (int i = 0; i < card->skill_count; i++) {
                 if (strcmp(card->skills[i].name, key + 6) == 0) {
-                    cc_add_skill(card, key + 6, card->skills[i].level + lv);
+                    int new_level = card->skills[i].level + lv;
+                    if (new_level < 0 || new_level > 100) {
+                        log_warn("apply_create_line: skill '%s' delta %d -> %d "
+                                 "out of range [0,100] (AI output violation)",
+                                 key + 6, lv, new_level);
+                    }
+                    cc_add_skill(card, key + 6, new_level);
                     return;
                 }
             }

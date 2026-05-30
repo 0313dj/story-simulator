@@ -156,17 +156,27 @@ void map_ensure_location(GameMap *map,
         if (idx >= 0) { l3x = l3->points[idx].x; l3y = l3->points[idx].y; }
     }
 
-    /* 2. 确保L2存在，聚类在L3点附近 */
+    /* 2. 确保L2存在，聚类在L3点附近。
+       跳过与area同名的district，防止大地点嵌套自身。 */
     int l2x = l3x, l2y = l3y;
     if (district && district[0]) {
-        add_point_near(l2, district, l3x, l3y, 40, 15);
-        int idx = find_point(l2, district);
-        if (idx >= 0) { l2x = l2->points[idx].x; l2y = l2->points[idx].y; }
+        if (area && area[0] && strcmp(district, area) == 0) {
+            /* district与area同名，视为大地点没有小地点细分，跳过 */
+        } else {
+            add_point_near(l2, district, l3x, l3y, 40, 15);
+            int idx = find_point(l2, district);
+            if (idx >= 0) { l2x = l2->points[idx].x; l2y = l2->points[idx].y; }
+        }
     }
 
-    /* 3. 确保L1存在，聚类在L2点附近 */
+    /* 3. 确保L1存在，聚类在L2点附近。
+       跳过与district或area同名的spot。 */
     if (spot && spot[0]) {
-        add_point_near(l1, spot, l2x, l2y, 40, 10);
+        bool dup_with_area   = (area     && area[0]     && strcmp(spot, area)     == 0);
+        bool dup_with_dist   = (district && district[0] && strcmp(spot, district) == 0);
+        if (!dup_with_area && !dup_with_dist) {
+            add_point_near(l1, spot, l2x, l2y, 40, 10);
+        }
     }
 }
 

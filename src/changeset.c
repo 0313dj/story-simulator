@@ -139,8 +139,13 @@ static void cs_apply_one(const ChangeEntryFull *e, CharacterCard *target,
             /* Check if it's a skill delta */
             for (int i = 0; i < target->skill_count; i++) {
                 if (strcmp(target->skills[i].name, e->field) == 0) {
-                    cc_add_skill(target, e->field,
-                        target->skills[i].level + e->delta);
+                    int new_level = target->skills[i].level + e->delta;
+                    if (new_level < 0 || new_level > 100) {
+                        log_warn("cs_apply: skill '%s' delta %d -> %d "
+                                 "out of range [0,100] (will be clamped)",
+                                 e->field, e->delta, new_level);
+                    }
+                    cc_add_skill(target, e->field, new_level);
                     goto applied;
                 }
             }
@@ -205,6 +210,11 @@ static void cs_apply_one(const ChangeEntryFull *e, CharacterCard *target,
                 /* Check if it's a skill set */
                 for (int i = 0; i < target->skill_count; i++) {
                     if (strcmp(target->skills[i].name, e->field) == 0) {
+                        if (e->new_value < 0 || e->new_value > 100) {
+                            log_warn("cs_apply: skill '%s' set to %d "
+                                     "out of range [0,100] (will be clamped)",
+                                     e->field, e->new_value);
+                        }
                         cc_add_skill(target, e->field, e->new_value);
                         goto set_applied;
                     }
@@ -267,6 +277,17 @@ static void cs_apply_one(const ChangeEntryFull *e, CharacterCard *target,
                 cur = target->age;
             } else if (strcmp(e->field, "status") == 0) {
                 cur = (int)target->status;
+            } else {
+                /* Check if it's a skill field: skill name matches a skill on the entity */
+                int found = 0;
+                for (int i = 0; i < target->skill_count; i++) {
+                    if (strcmp(target->skills[i].name, e->field) == 0) {
+                        cur = target->skills[i].level;
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found) break; /* field not recognized, skip clamp */
             }
             /* Apply clamp */
             if (cur < e->clamp_min) {
