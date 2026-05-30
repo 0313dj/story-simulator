@@ -869,6 +869,7 @@ bool api_create_world(ApiClient *api,
         " personality=身份性格描述(必须明确写出此人的社会身份),\n"
         " clothing=衣着描述(必须符合其身份),\n"
         " home=住所地点名(每个NPC必须有家，用地图中已有的地点名),\n"
+        " money=初始金钱(根据身份设定合理数值),\n"
         " attr.appearance=颜值, attr.constitution=体质,\n"
         " attr.intelligence=智力, player_affinity=好感度(-100~100)\n"
         " 必须包含: relation.玩家名=关系类型+/-好感度\n"
