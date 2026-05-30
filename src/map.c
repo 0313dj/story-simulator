@@ -163,7 +163,7 @@ void map_ensure_location(GameMap *map,
         if (area && area[0] && strcmp(district, area) == 0) {
             /* district与area同名，视为大地点没有小地点细分，跳过 */
         } else {
-            add_point_near(l2, district, l3x, l3y, 40, 15);
+            add_point_near(l2, district, l3x, l3y, 200, 60);
             int idx = find_point(l2, district);
             if (idx >= 0) { l2x = l2->points[idx].x; l2y = l2->points[idx].y; }
         }
@@ -175,7 +175,7 @@ void map_ensure_location(GameMap *map,
         bool dup_with_area   = (area     && area[0]     && strcmp(spot, area)     == 0);
         bool dup_with_dist   = (district && district[0] && strcmp(spot, district) == 0);
         if (!dup_with_area && !dup_with_dist) {
-            add_point_near(l1, spot, l2x, l2y, 40, 10);
+            add_point_near(l1, spot, l2x, l2y, 150, 40);
         }
     }
 }

@@ -654,8 +654,10 @@ function mapRenderModal() {
   }
   ctrlHtml += '</div>';
 
-  /* ── SVG ── */
-  var svg = '<svg width="' + W + '" height="' + H + '" style="background:#1a1a2e;border-radius:8px" id="map-svg">';
+  /* ── SVG (wrapped in <g> for pan) ── */
+  var px = nav.panX || 0, py = nav.panY || 0;
+  var svg = '<svg width="' + W + '" height="' + H + '" style="background:#1a1a2e;border-radius:8px;cursor:grab" id="map-svg">';
+  svg += '<g id="map-pan-group" transform="translate(' + px.toFixed(1) + ',' + py.toFixed(1) + ')">';
   for (var g = 0; g <= 1000; g += 200) {
     var gx = PAD + g * sx;
     var gy = PAD + g * sy;
@@ -673,7 +675,7 @@ function mapRenderModal() {
     svg += '<circle cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + radius + '" fill="' + color + '" stroke="#fff" stroke-width="0.6" class="' + cls + '" data-name="' + pt.name + '" data-level="' + pt.level + '" data-x="' + pt.x + '" data-y="' + pt.y + '"/>';
     svg += '<text x="' + (cx + Math.round(9*zoomScale)).toFixed(1) + '" y="' + (cy + Math.round(4*zoomScale)).toFixed(1) + '" fill="' + color + '" font-size="' + FONT + '" style="pointer-events:none;font-weight:500">' + pt.name + '</text>';
   }
-  svg += '</svg>';
+  svg += '</g></svg>';
 
   /* ── Legend ── */
   var legend = '<div style="text-align:center;margin-top:6px;font-size:11px;color:var(--text-muted)">';
@@ -704,11 +706,12 @@ function mapRenderModal() {
 
   /* ── Event listeners ── */
   setTimeout(function() {
-    /* Back: drill up one level */
+    /* Back: drill up one level (reset pan) */
     var backBtn = document.getElementById('map-back-btn');
     if (backBtn) backBtn.onclick = function() {
       nav.parents.pop();
       nav.level = Math.min(2, nav.level + 1);
+      nav.panX = 0; nav.panY = 0;
       mapRenderModal();
     };
 
@@ -726,17 +729,41 @@ function mapRenderModal() {
       mapRenderModal();
     };
 
-    /* Top: return to L2 + reset zoom */
+    /* Top: return to L2 + reset zoom + reset pan */
     var topBtn = document.getElementById('map-top-btn');
     if (topBtn) topBtn.onclick = function() {
       nav.parents = [];
       nav.level = 2;
       nav.zoom = 1.0;
+      nav.panX = 0; nav.panY = 0;
       mapRenderModal();
     };
 
     var svgEl = document.getElementById('map-svg');
     if (svgEl) {
+      /* ── Mouse drag-to-pan ── */
+      var drag = { on: false, sx: 0, sy: 0, px: nav.panX || 0, py: nav.panY || 0 };
+      svgEl.onmousedown = function(e) {
+        if (e.button !== 0) return;
+        drag.on = true; drag.sx = e.clientX; drag.sy = e.clientY;
+        drag.px = nav.panX || 0; drag.py = nav.panY || 0;
+        svgEl.style.cursor = 'grabbing';
+        e.preventDefault();
+      };
+      window.addEventListener('mousemove', function(e) {
+        if (!drag.on) return;
+        nav.panX = drag.px + (e.clientX - drag.sx);
+        nav.panY = drag.py + (e.clientY - drag.sy);
+        var g = document.getElementById('map-pan-group');
+        if (g) g.setAttribute('transform', 'translate(' + nav.panX.toFixed(1) + ',' + nav.panY.toFixed(1) + ')');
+      });
+      window.addEventListener('mouseup', function() {
+        if (!drag.on) return;
+        drag.on = false;
+        var s = document.getElementById('map-svg');
+        if (s) s.style.cursor = 'grab';
+      });
+
       /* Mouse wheel: visual zoom (same level) */
       svgEl.onwheel = function(e) {
         e.preventDefault();
@@ -749,7 +776,7 @@ function mapRenderModal() {
         return false;
       };
 
-      /* Point click: drill down */
+      /* Point click: drill down (reset pan) */
       var circles = svgEl.querySelectorAll('circle[data-level]');
       for (var k = 0; k < circles.length; k++) {
         (function(circle) {
@@ -763,6 +790,7 @@ function mapRenderModal() {
                 y: parseInt(circle.getAttribute('data-y'))
               });
               nav.level = lv - 1;
+              nav.panX = 0; nav.panY = 0;
               mapRenderModal();
             }
           };
@@ -802,7 +830,7 @@ $('btn-map').onclick = async function() {
     }
     window._mapCurrentLoc = data.location || data.env || {};
     window._mapAllPoints = points;
-    window._mapNav = { level: 2, parents: [], zoom: 1.0 };
+    window._mapNav = { level: 2, parents: [], zoom: 1.0, panX: 0, panY: 0 };
     mapRenderModal();
   } catch(e) {
     showModal('地图', '<p style="color:red">加载失败: ' + e.message + '</p>');
