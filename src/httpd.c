@@ -278,6 +278,13 @@ static void handle_api(SOCKET client, const char *headers, const char *body, int
         json_get_str(json, "\"name\"", lname, sizeof(lname));
         log_info("HTTP API: delete_location level=%s name=%s", lvl, lname);
         result = backend_delete_location(lvl, lname);
+    } else if (strcmp(cmd, "rename_location") == 0) {
+        char lvl[8] = {0}, old_name[128] = {0}, new_name[128] = {0};
+        json_get_str(json, "\"level\"", lvl, sizeof(lvl));
+        json_get_str(json, "\"oldName\"", old_name, sizeof(old_name));
+        json_get_str(json, "\"newName\"", new_name, sizeof(new_name));
+        log_info("HTTP API: rename_location level=%s '%s' → '%s'", lvl, old_name, new_name);
+        result = backend_rename_location(lvl, old_name, new_name);
     } else if (strcmp(cmd, "travel") == 0) {
         char fr[64]={0}, to[64]={0}, meth[64]={0};
         double dist = 0;

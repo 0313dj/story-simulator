@@ -689,19 +689,25 @@ function mapRenderModal() {
       '<span style="color:var(--accent)">' + (loc.area || '?') + ' &rsaquo; ' + (loc.district || '?') + ' &rsaquo; ' + (loc.spot || '?') + '</span></div>';
   }
 
-  /* ── Delete location section ── */
-  var delHtml = '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border-light)">' +
-    '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">删除地点:</div>';
+  /* ── Edit / Delete location section ── */
+  var edHtml = '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border-light)">' +
+    '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">编辑地点:</div>';
   for (var d = 0; d < visible.length; d++) {
     var dp = visible[d];
-    delHtml += '<div style="display:flex;align-items:center;justify-content:space-between;padding:3px 0;font-size:12px">' +
-      '<span><span style="color:' + colors[dp.level] + '">●</span> ' + escapeHtml(dp.name) + ' <span style="color:var(--text-muted);font-size:10px">(' + levelNames[dp.level] + ')</span></span>' +
-      '<button class="btn btn-danger btn-sm map-del-btn" data-name="' + dp.name.replace(/"/g, '&quot;') + '" data-level="' + dp.level + '" title="删除">✕</button>' +
-      '</div>';
+    var safeName = dp.name.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    edHtml += '<div style="display:flex;align-items:center;justify-content:space-between;padding:3px 0;font-size:12px">' +
+      '<span style="flex:1"><span style="color:' + colors[dp.level] + '">●</span> ' +
+      '<span class="map-loc-name" id="loc-name-' + d + '">' + escapeHtml(dp.name) + '</span>' +
+      '<input class="map-rename-input" id="loc-input-' + d + '" value="' + escapeHtml(dp.name) + '" style="display:none;width:140px;font-size:12px;padding:1px 4px;border:1px solid var(--accent);border-radius:3px;background:#1a1a2e;color:var(--text-primary)"/>' +
+      ' <span style="color:var(--text-muted);font-size:10px">(' + levelNames[dp.level] + ')</span></span>' +
+      '<span style="flex-shrink:0">' +
+      '<button class="btn btn-secondary btn-sm map-edit-btn" data-idx="' + d + '" data-name="' + safeName + '" data-level="' + dp.level + '" title="重命名" style="padding:0 6px;font-size:11px">✎</button>' +
+      '<button class="btn btn-danger btn-sm map-del-btn" data-name="' + safeName + '" data-level="' + dp.level + '" title="删除" style="margin-left:4px">✕</button>' +
+      '</span></div>';
   }
-  delHtml += '</div>';
+  edHtml += '</div>';
 
-  var html = ctrlHtml + '<div style="overflow:auto;max-height:450px;text-align:center;border-radius:8px">' + svg + '</div>' + legend + delHtml;
+  var html = ctrlHtml + '<div style="overflow:auto;max-height:450px;text-align:center;border-radius:8px">' + svg + '</div>' + legend + edHtml;
   showModal('地图 — ' + levelNames[nav.level], html, true);
 
   /* ── Event listeners ── */
@@ -796,6 +802,56 @@ function mapRenderModal() {
           };
         })(circles[k]);
       }
+    }
+
+    /* Rename location buttons */
+    var editBtns = document.querySelectorAll('.map-edit-btn');
+    for (var eb = 0; eb < editBtns.length; eb++) {
+      (function(btn) {
+        btn.onclick = function() {
+          var idx = btn.getAttribute('data-idx');
+          var nameSpan = document.getElementById('loc-name-' + idx);
+          var inputEl = document.getElementById('loc-input-' + idx);
+          if (!nameSpan || !inputEl) return;
+
+          if (inputEl.style.display === 'none') {
+            /* Switch to edit mode */
+            nameSpan.style.display = 'none';
+            inputEl.style.display = 'inline';
+            inputEl.focus();
+            inputEl.select();
+            btn.textContent = '✓';
+            btn.title = '确认';
+          } else {
+            /* Confirm rename */
+            var oldName = btn.getAttribute('data-name');
+            var newName = inputEl.value.trim();
+            var locLevel = btn.getAttribute('data-level');
+            if (!newName || newName === oldName) {
+              nameSpan.style.display = 'inline';
+              inputEl.style.display = 'none';
+              btn.textContent = '✎';
+              btn.title = '重命名';
+              return;
+            }
+            /* Async rename via API */
+            (async function() {
+              var r = await api('rename_location', { level: locLevel, oldName: oldName, newName: newName });
+              if (r.ok) {
+                addSystemMsg('已重命名: ' + oldName + ' → ' + newName);
+                if (r.state && r.state.mapPoints) window._mapAllPoints = r.state.mapPoints;
+                mapRenderModal();
+              } else {
+                addSystemMsg('重命名失败: ' + (r.error || '未知错误'));
+                nameSpan.style.display = 'inline';
+                inputEl.style.display = 'none';
+                btn.textContent = '✎';
+                btn.title = '重命名';
+              }
+            })();
+          }
+        };
+      })(editBtns[eb]);
     }
 
     /* Delete location buttons */

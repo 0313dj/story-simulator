@@ -1188,6 +1188,7 @@ static bool load_from_file(const char *name)
             g_env.location.district, g_env.location.spot);
         map_locate(&g_map, g_env.location.area,
                    g_env.location.district, g_env.location.spot);
+        map_adjust_crowding(&g_map);
         g_world_ready = true;
         /* Stage 3: initialize NPC brains */
         npc_brains_init();
@@ -1313,6 +1314,7 @@ static bool load_from_file(const char *name)
             g_env.location.district, g_env.location.spot);
         map_locate(&g_map, g_env.location.area,
                    g_env.location.district, g_env.location.spot);
+        map_adjust_crowding(&g_map);
         g_world_ready = true;
 
         /* Stage 3: initialize NPC brains */
@@ -2734,6 +2736,7 @@ char *backend_create_world(const char *name, const char *age,
     map_ensure_location(&g_map, g_env.location.area, g_env.location.district, g_env.location.spot);
     log_info("CREATE_WORLD: map_ensure_location done, calling map_locate...");
     map_locate(&g_map, g_env.location.area, g_env.location.district, g_env.location.spot);
+    map_adjust_crowding(&g_map);  /* fix AI-generated coordinate crowding */
     log_info("CREATE_WORLD: map_locate done, setting world_ready...");
     g_world_ready = true;
     log_info("CREATE_WORLD: calling npc_brains_init...");
@@ -3014,6 +3017,42 @@ char *backend_delete_location(const char *level_str, const char *name)
     bool saved = save_to_file("autosave");
     event_push(&g_events, g_ws.tick, -1, -1, EVENT_SYSTEM,
                "{\"msg\":\"deleted location\",\"level\":%d,\"name\":\"%s\"}", level, name);
+
+    JsonBuf j; jb_init(&j); jb_obj_open(&j);
+    jb_kv_bool(&j, "ok", 1);
+    if (!saved) jb_kv_str(&j, "warning", "自动存档写入失败");
+    jb_str(&j, ",\"state\":"); char *s = build_state_json(); jb_str(&j, s); free(s);
+    jb_obj_close(&j);
+    LeaveCriticalSection(&g_state_lock);
+    return jb_detach(&j);
+}
+
+char *backend_rename_location(const char *level_str, const char *old_name, const char *new_name)
+{
+    EnterCriticalSection(&g_state_lock);
+    if (!g_world_ready) { LeaveCriticalSection(&g_state_lock); return err_json("无存档"); }
+
+    int level = atoi(level_str);
+    if (level < 0 || level > 2) {
+        LeaveCriticalSection(&g_state_lock);
+        return err_json("无效的地图层级");
+    }
+    if (!old_name || !old_name[0] || !new_name || !new_name[0]) {
+        LeaveCriticalSection(&g_state_lock);
+        return err_json("请提供新旧名称");
+    }
+
+    if (!map_rename_point(&g_map, level, old_name, new_name)) {
+        LeaveCriticalSection(&g_state_lock);
+        return err_json("重命名失败（名称已存在或找不到原点）");
+    }
+
+    log_info("RENAME_LOCATION: level=%d '%s' → '%s'", level, old_name, new_name);
+    ws_sync_from_globals();
+    bool saved = save_to_file("autosave");
+    event_push(&g_events, g_ws.tick, -1, -1, EVENT_SYSTEM,
+               "{\"msg\":\"renamed location\",\"level\":%d,\"old\":\"%s\",\"new\":\"%s\"}",
+               level, old_name, new_name);
 
     JsonBuf j; jb_init(&j); jb_obj_open(&j);
     jb_kv_bool(&j, "ok", 1);

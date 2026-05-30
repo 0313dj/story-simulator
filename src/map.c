@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 
 /* 坐标缩放：坐标单位 → 公里。坐标范围0-999，对应约0-500km */
 #define COORD_SCALE  0.5
@@ -294,6 +295,69 @@ bool map_has_point(const GameMap *map, int level, const char *name)
 {
     if (level < 0 || level >= 3 || !name || !name[0]) return false;
     return find_point(&map->levels[level], name) >= 0;
+}
+
+/* Minimum distance between points at each level (in coordinate units 0-999) */
+#define MAP_MIN_DIST_L2  120   /* 大地点 */
+#define MAP_MIN_DIST_L1   60   /* 小地点 */
+#define MAP_MIN_DIST_L0   35   /* 具体地点 */
+
+/* Push apart overlapping points at all levels.
+   Called after AI-generated coordinate import to prevent crowding. */
+void map_adjust_crowding(GameMap *map)
+{
+    int min_dist_by_level[3] = { MAP_MIN_DIST_L0, MAP_MIN_DIST_L1, MAP_MIN_DIST_L2 };
+
+    for (int iter = 0; iter < 5; iter++) {
+        bool any_moved = false;
+        for (int lv = 0; lv < 3; lv++) {
+            MapLevel *ml = &map->levels[lv];
+            int min_d = min_dist_by_level[lv];
+            for (int i = 0; i < ml->count; i++) {
+                for (int j = i + 1; j < ml->count; j++) {
+                    int dx = ml->points[i].x - ml->points[j].x;
+                    int dy = ml->points[i].y - ml->points[j].y;
+                    int dist2 = dx * dx + dy * dy;
+                    if (dist2 < min_d * min_d && dist2 > 0) {
+                        double dist = sqrt((double)dist2);
+                        double overlap = (double)min_d - dist;
+                        double nx = (double)dx / dist;
+                        double ny = (double)dy / dist;
+                        double push = overlap * 0.55; /* slightly more than half to converge */
+                        ml->points[i].x += (int)(nx * push);
+                        ml->points[i].y += (int)(ny * push);
+                        ml->points[j].x -= (int)(nx * push);
+                        ml->points[j].y -= (int)(ny * push);
+                        /* Clamp */
+                        if (ml->points[i].x < 10) ml->points[i].x = 10;
+                        if (ml->points[i].x > 990) ml->points[i].x = 990;
+                        if (ml->points[i].y < 10) ml->points[i].y = 10;
+                        if (ml->points[i].y > 990) ml->points[i].y = 990;
+                        if (ml->points[j].x < 10) ml->points[j].x = 10;
+                        if (ml->points[j].x > 990) ml->points[j].x = 990;
+                        if (ml->points[j].y < 10) ml->points[j].y = 10;
+                        if (ml->points[j].y > 990) ml->points[j].y = 990;
+                        any_moved = true;
+                    }
+                }
+            }
+        }
+        if (!any_moved) break;
+    }
+}
+
+bool map_rename_point(GameMap *map, int level, const char *old_name, const char *new_name)
+{
+    if (level < 0 || level >= 3 || !old_name || !old_name[0] || !new_name || !new_name[0])
+        return false;
+    if (strcmp(old_name, new_name) == 0) return true;
+    /* Don't allow duplicate names at the same level */
+    if (find_point(&map->levels[level], new_name) >= 0) return false;
+    int idx = find_point(&map->levels[level], old_name);
+    if (idx < 0) return false;
+    strncpy(map->levels[level].points[idx].name, new_name, MAP_NAME_LEN - 1);
+    map->levels[level].points[idx].name[MAP_NAME_LEN - 1] = '\0';
+    return true;
 }
 
 int map_export_json(const GameMap *map, char *out, int out_size)

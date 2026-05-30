@@ -44,6 +44,7 @@ char *backend_get_state(void);
 
 /* Delete a map location point (level 0=spot, 1=district, 2=area) */
 char *backend_delete_location(const char *level_str, const char *name);
+char *backend_rename_location(const char *level_str, const char *old_name, const char *new_name);
 
 /* Get chat history (JSON array) */
 char *backend_get_chat_history(void);

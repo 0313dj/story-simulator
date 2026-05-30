@@ -54,4 +54,10 @@ bool map_remove_point(GameMap *map, int level, const char *name);
 /* 检查指定级别是否存在该名称的地图点 */
 bool map_has_point(const GameMap *map, int level, const char *name);
 
+/* 推开所有层级中距离过近的点（AI生成坐标可能拥挤） */
+void map_adjust_crowding(GameMap *map);
+
+/* 重命名指定层级的地图点。返回true=成功，false=名称重复或不存在 */
+bool map_rename_point(GameMap *map, int level, const char *old_name, const char *new_name);
+
 #endif
