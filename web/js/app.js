@@ -567,20 +567,21 @@ $('btn-relations').onclick = async function() {
 };
 /* ═══════════════════════════════════════════════════════════════
    Map drill-down helpers
+
+   Two independent axes:
+     nav.level  — drill-down level (2=大地点 1=小地点 0=具体地点)
+                  changed by clicking a point (drill in) or [返回] (drill out)
+     nav.zoom   — visual zoom factor (default 1.0, range 0.5–3.0)
+                  changed by [放大]/[缩小] buttons and mouse wheel
    ═══════════════════════════════════════════════════════════════ */
 
-/* Given a point list, find visible points based on nav state.
-   Uses nearest-neighbor: a lower-level point belongs to the
-   closest higher-level point among all higher-level candidates. */
 function mapGetVisible(allPoints, nav) {
   if (!allPoints || !allPoints.length) return [];
 
-  /* Default: top level (大地点) */
   if (nav.level === 2) {
     return allPoints.filter(function(p) { return p.level === 2; });
   }
 
-  /* For levels 1 and 0: find children of the last selected parent */
   if (nav.parents.length === 0) {
     return allPoints.filter(function(p) { return p.level === nav.level; });
   }
@@ -588,7 +589,6 @@ function mapGetVisible(allPoints, nav) {
   var parent = nav.parents[nav.parents.length - 1];
   var targetLevel = nav.level;
   var candidates = allPoints.filter(function(p) { return p.level === targetLevel; });
-  /* Higher-level points that could be parents of these candidates */
   var higherPoints = allPoints.filter(function(p) { return p.level > targetLevel; });
 
   return candidates.filter(function(c) {
@@ -599,30 +599,26 @@ function mapGetVisible(allPoints, nav) {
       var dx = c.x - hp.x;
       var dy = c.y - hp.y;
       var dist = dx * dx + dy * dy;
-      if (dist < nearestDist) {
-        nearestDist = dist;
-        nearestName = hp.name;
-      }
+      if (dist < nearestDist) { nearestDist = dist; nearestName = hp.name; }
     }
     return nearestName === parent.name;
   });
 }
 
-/* Render the drill-down map modal */
 function mapRenderModal() {
   var nav = window._mapNav;
   var allPoints = window._mapAllPoints;
   var visible = mapGetVisible(allPoints, nav);
 
-  /* Zoom scale: level 2=1.0, level 1=1.5, level 0=2.0 */
-  var zoomScale = [2.0, 1.5, 1.0][nav.level] || 1.0;
+  /* Visual zoom — independent of drill-down level */
+  var zoomScale = nav.zoom || 1.0;
   var W = Math.round(520 * zoomScale);
   var H = Math.round(420 * zoomScale);
   var PAD = Math.round(30 * zoomScale);
   var FONT = Math.round(10 * zoomScale);
   var sx = (W - PAD * 2) / 1000;
   var sy = (H - PAD * 2) / 1000;
-  var colors = ['#34C759', '#007AFF', '#FF9500']; /* level 0,1,2 */
+  var colors = ['#34C759', '#007AFF', '#FF9500'];
   var levelNames = ['具体地点', '小地点', '大地点'];
   var radiusByLevel = [Math.round(4*zoomScale), Math.round(5*zoomScale), Math.round(7*zoomScale)];
 
@@ -634,25 +630,25 @@ function mapRenderModal() {
     bcHtml += '<span style="color:' + colors[p.level] + ';font-weight:500">' + p.name + '</span>';
   }
 
-  /* ── Back button + controls ── */
+  /* ── Controls ── */
   var ctrlHtml = '<div style="margin-bottom:8px;display:flex;align-items:center;justify-content:center;gap:8px">';
-  /* Zoom out button */
-  if (nav.level < 2) {
-    ctrlHtml += '<button class="btn btn-secondary btn-sm" id="map-zoom-out-btn" title="缩小">&#x2795; 缩小</button>';
-  }
+  /* Zoom out (visual) — always available unless at min zoom */
+  ctrlHtml += '<button class="btn btn-secondary btn-sm" id="map-zoom-out-btn" title="缩小"' +
+    (zoomScale <= 0.6 ? ' disabled' : '') + '>&#x2796; 缩小</button>';
+  /* Back (drill-up) */
   if (nav.parents.length > 0) {
     ctrlHtml += '<button class="btn btn-secondary btn-sm" id="map-back-btn">&larr; 返回</button>';
-  } else if (nav.level >= 2) {
+  } else {
     ctrlHtml += '<span style="width:64px"></span>';
   }
   ctrlHtml += '<span style="font-size:12px;color:var(--text-primary)">';
   ctrlHtml += (bcHtml || '全部大地点');
   ctrlHtml += '</span>';
   ctrlHtml += '<span style="font-size:11px;color:var(--text-muted)">（' + visible.length + '个' + levelNames[nav.level] + '）</span>';
-  /* Zoom in button */
-  if (nav.level > 0) {
-    ctrlHtml += '<button class="btn btn-secondary btn-sm" id="map-zoom-in-btn" title="放大">&#x2795; 放大</button>';
-  }
+  /* Zoom in (visual) — always available unless at max zoom */
+  ctrlHtml += '<button class="btn btn-secondary btn-sm" id="map-zoom-in-btn" title="放大"' +
+    (zoomScale >= 3.0 ? ' disabled' : '') + '>&#x2795; 放大</button>';
+  /* Top level */
   if (nav.level < 2) {
     ctrlHtml += '<button class="btn btn-secondary btn-sm" id="map-top-btn" title="回到顶层">&#x21E7; 顶层</button>';
   }
@@ -660,14 +656,12 @@ function mapRenderModal() {
 
   /* ── SVG ── */
   var svg = '<svg width="' + W + '" height="' + H + '" style="background:#1a1a2e;border-radius:8px" id="map-svg">';
-  /* Grid */
   for (var g = 0; g <= 1000; g += 200) {
     var gx = PAD + g * sx;
     var gy = PAD + g * sy;
     svg += '<line x1="' + gx + '" y1="' + PAD + '" x2="' + gx + '" y2="' + (H - PAD) + '" stroke="#ffffff10"/>';
     svg += '<line x1="' + PAD + '" y1="' + gy + '" x2="' + (W - PAD) + '" y2="' + gy + '" stroke="#ffffff10"/>';
   }
-  /* Points */
   for (var i = 0; i < visible.length; i++) {
     var pt = visible[i];
     var cx = PAD + pt.x * sx;
@@ -683,17 +677,10 @@ function mapRenderModal() {
 
   /* ── Legend ── */
   var legend = '<div style="text-align:center;margin-top:6px;font-size:11px;color:var(--text-muted)">';
-  if (nav.level === 2) {
-    legend += '<span style="color:#FF9500">● 大地点</span>  <span style="color:var(--text-muted)">— 点击下钻 · 滚轮缩放</span>';
-  } else if (nav.level === 1) {
-    legend += '<span style="color:#007AFF">● 小地点</span>  <span style="color:var(--text-muted)">— 点击下钻 · 滚轮缩放</span>';
-  } else {
-    legend += '<span style="color:#34C759">● 具体地点</span>  <span style="color:var(--text-muted)">— 终点层级 · 滚轮缩小</span>';
-  }
-  legend += '  <span style="color:var(--text-muted)"> 缩放: ' + zoomScale.toFixed(1) + 'x</span>';
+  legend += '<span style="color:#FF9500">● 大地点</span>  <span style="color:#007AFF">● 小地点</span>  <span style="color:#34C759">● 具体地点</span>';
+  legend += '  <span style="color:var(--text-muted)">| 缩放: ' + zoomScale.toFixed(1) + 'x | 点击地点下钻</span>';
   legend += '</div>';
 
-  /* ── Current location indicator ── */
   var loc = window._mapCurrentLoc;
   if (loc) {
     legend += '<div style="text-align:center;margin-top:2px;font-size:11px;color:var(--text-muted)">当前位置: ' +
@@ -702,106 +689,80 @@ function mapRenderModal() {
 
   /* ── Delete location section ── */
   var delHtml = '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border-light)">' +
-    '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">删除地点 (点击下方地点名旁的 ✕ 按钮删除):</div>';
+    '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">删除地点:</div>';
   for (var d = 0; d < visible.length; d++) {
-    var pt = visible[d];
-    var lvlName = levelNames[pt.level] || '?';
+    var dp = visible[d];
     delHtml += '<div style="display:flex;align-items:center;justify-content:space-between;padding:3px 0;font-size:12px">' +
-      '<span><span style="color:' + colors[pt.level] + '">●</span> ' + escapeHtml(pt.name) + ' <span style="color:var(--text-muted);font-size:10px">(' + lvlName + ')</span></span>' +
-      '<button class="btn btn-danger btn-sm map-del-btn" data-name="' + pt.name.replace(/"/g, '&quot;') + '" data-level="' + pt.level + '" title="删除此地点">✕</button>' +
+      '<span><span style="color:' + colors[dp.level] + '">●</span> ' + escapeHtml(dp.name) + ' <span style="color:var(--text-muted);font-size:10px">(' + levelNames[dp.level] + ')</span></span>' +
+      '<button class="btn btn-danger btn-sm map-del-btn" data-name="' + dp.name.replace(/"/g, '&quot;') + '" data-level="' + dp.level + '" title="删除">✕</button>' +
       '</div>';
   }
   delHtml += '</div>';
 
   var html = ctrlHtml + '<div style="overflow:auto;max-height:450px;text-align:center;border-radius:8px">' + svg + '</div>' + legend + delHtml;
+  showModal('地图 — ' + levelNames[nav.level], html, true);
 
-  var title = '地图 — ' + levelNames[nav.level];
-  showModal(title, html, true);
-
-  /* ── Attach event listeners after DOM is populated ── */
+  /* ── Event listeners ── */
   setTimeout(function() {
+    /* Back: drill up one level */
     var backBtn = document.getElementById('map-back-btn');
-    if (backBtn) {
-      backBtn.onclick = function() {
-        nav.parents.pop();
-        nav.level = Math.min(2, nav.level + 1);
-        mapRenderModal();
-      };
-    }
+    if (backBtn) backBtn.onclick = function() {
+      nav.parents.pop();
+      nav.level = Math.min(2, nav.level + 1);
+      mapRenderModal();
+    };
 
+    /* Visual zoom in — same level, larger scale */
     var zoomInBtn = document.getElementById('map-zoom-in-btn');
-    if (zoomInBtn) {
-      zoomInBtn.onclick = function() {
-        if (nav.level > 0) {
-          /* Zoom in: try current parent's children, or nearest point under center */
-          var allPts = mapGetVisible(allPoints, nav);
-          if (allPts.length > 0) {
-            nav.parents.push({ name: allPts[0].name, level: nav.level, x: allPts[0].x, y: allPts[0].y });
-          }
-          nav.level = Math.max(0, nav.level - 1);
-          mapRenderModal();
-        }
-      };
-    }
+    if (zoomInBtn) zoomInBtn.onclick = function() {
+      nav.zoom = Math.min(3.0, (nav.zoom || 1.0) + 0.5);
+      mapRenderModal();
+    };
 
+    /* Visual zoom out — same level, smaller scale */
     var zoomOutBtn = document.getElementById('map-zoom-out-btn');
-    if (zoomOutBtn) {
-      zoomOutBtn.onclick = function() {
-        if (nav.parents.length > 0) {
-          nav.parents.pop();
-        }
-        nav.level = Math.min(2, nav.level + 1);
-        mapRenderModal();
-      };
-    }
+    if (zoomOutBtn) zoomOutBtn.onclick = function() {
+      nav.zoom = Math.max(0.5, (nav.zoom || 1.0) - 0.5);
+      mapRenderModal();
+    };
 
+    /* Top: return to L2 + reset zoom */
     var topBtn = document.getElementById('map-top-btn');
-    if (topBtn) {
-      topBtn.onclick = function() {
-        nav.parents = [];
-        nav.level = 2;
-        mapRenderModal();
-      };
-    }
+    if (topBtn) topBtn.onclick = function() {
+      nav.parents = [];
+      nav.level = 2;
+      nav.zoom = 1.0;
+      mapRenderModal();
+    };
 
     var svgEl = document.getElementById('map-svg');
     if (svgEl) {
-      /* ── Mouse wheel zoom ── */
+      /* Mouse wheel: visual zoom (same level) */
       svgEl.onwheel = function(e) {
         e.preventDefault();
         if (e.deltaY < 0) {
-          /* Scroll up = zoom in */
-          if (nav.level > 0) {
-            var allPts = mapGetVisible(allPoints, nav);
-            if (allPts.length > 0) {
-              nav.parents.push({ name: allPts[0].name, level: nav.level, x: allPts[0].x, y: allPts[0].y });
-            }
-            nav.level = Math.max(0, nav.level - 1);
-            mapRenderModal();
-          }
+          nav.zoom = Math.min(3.0, (nav.zoom || 1.0) + 0.25);
         } else {
-          /* Scroll down = zoom out */
-          if (nav.parents.length > 0) {
-            nav.parents.pop();
-          }
-          nav.level = Math.min(2, nav.level + 1);
-          mapRenderModal();
+          nav.zoom = Math.max(0.5, (nav.zoom || 1.0) - 0.25);
         }
+        mapRenderModal();
         return false;
       };
 
+      /* Point click: drill down */
       var circles = svgEl.querySelectorAll('circle[data-level]');
       for (var k = 0; k < circles.length; k++) {
         (function(circle) {
           circle.onclick = function() {
-            var level = parseInt(circle.getAttribute('data-level'));
-            var name = circle.getAttribute('data-name');
-            var x = parseInt(circle.getAttribute('data-x'));
-            var y = parseInt(circle.getAttribute('data-y'));
-
-            if (level > 0) {
-              nav.parents.push({ name: name, level: level, x: x, y: y });
-              nav.level = level - 1;
+            var lv = parseInt(circle.getAttribute('data-level'));
+            if (lv > 0) {
+              nav.parents.push({
+                name: circle.getAttribute('data-name'),
+                level: lv,
+                x: parseInt(circle.getAttribute('data-x')),
+                y: parseInt(circle.getAttribute('data-y'))
+              });
+              nav.level = lv - 1;
               mapRenderModal();
             }
           };
@@ -809,22 +770,18 @@ function mapRenderModal() {
       }
     }
 
-    /* Bind delete location buttons */
+    /* Delete location buttons */
     var delBtns = document.querySelectorAll('.map-del-btn');
     for (var db = 0; db < delBtns.length; db++) {
       (function(btn) {
         btn.onclick = async function() {
           var locName = btn.getAttribute('data-name');
           var locLevel = btn.getAttribute('data-level');
-          if (!confirm('确定删除地点 "' + locName + '" 吗？此操作不可撤销。')) return;
+          if (!confirm('确定删除 "' + locName + '" 吗？')) return;
           var r = await api('delete_location', { level: locLevel, name: locName });
           if (r.ok) {
-            addSystemMsg('已删除地点: ' + locName);
-            /* Refresh map data from state */
-            if (r.state && r.state.mapPoints) {
-              window._mapAllPoints = r.state.mapPoints;
-            }
-            /* Re-render map modal */
+            addSystemMsg('已删除: ' + locName);
+            if (r.state && r.state.mapPoints) window._mapAllPoints = r.state.mapPoints;
             mapRenderModal();
           } else {
             addSystemMsg('删除失败: ' + (r.error || '未知错误'));
@@ -840,16 +797,12 @@ $('btn-map').onclick = async function() {
     var data = await api('get_state');
     var points = (data && data.mapPoints && data.mapPoints.length) ? data.mapPoints : [];
     if (!points.length) {
-      showModal('地图', '<p style="color:var(--text-muted);text-align:center">暂无地点数据<br>请先创建世界或探索新地点</p>');
+      showModal('地图', '<p style="color:var(--text-muted);text-align:center">暂无地点数据</p>');
       return;
     }
-
-    var loc = data.location || data.env || {};
-    window._mapCurrentLoc = loc;
+    window._mapCurrentLoc = data.location || data.env || {};
     window._mapAllPoints = points;
-    /* Reset navigation to top level on each open */
-    window._mapNav = { level: 2, parents: [] };
-
+    window._mapNav = { level: 2, parents: [], zoom: 1.0 };
     mapRenderModal();
   } catch(e) {
     showModal('地图', '<p style="color:red">加载失败: ' + e.message + '</p>');
