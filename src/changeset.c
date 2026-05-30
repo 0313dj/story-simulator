@@ -1,63 +1,12 @@
 #include "changeset.h"
+#include "log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-void cs_init(ChangeSet *cs)
-{
-    memset(cs, 0, sizeof(*cs));
-}
-
-bool cs_add_delta(ChangeSet *cs, const char *entity, const char *field, int delta)
-{
-    if (cs->count >= CS_MAX_CHANGES) return false;
-    ChangeEntry *e = &cs->entries[cs->count];
-    memset(e, 0, sizeof(*e));
-    e->type = CS_VARIABLE;
-    strncpy(e->entity_name, entity, sizeof(e->entity_name) - 1);
-    strncpy(e->field, field, sizeof(e->field) - 1);
-    e->delta = delta;
-    cs->count++;
-    return true;
-}
-
-bool cs_add_set(ChangeSet *cs, const char *entity, const char *field, int new_value)
-{
-    if (cs->count >= CS_MAX_CHANGES) return false;
-    ChangeEntry *e = &cs->entries[cs->count];
-    memset(e, 0, sizeof(*e));
-    e->type = CS_SET;
-    strncpy(e->entity_name, entity, sizeof(e->entity_name) - 1);
-    strncpy(e->field, field, sizeof(e->field) - 1);
-    e->new_value = new_value;
-    cs->count++;
-    return true;
-}
-
-bool cs_add_status(ChangeSet *cs, const char *entity, int status_code)
-{
-    if (cs->count >= CS_MAX_CHANGES) return false;
-    ChangeEntry *e = &cs->entries[cs->count];
-    memset(e, 0, sizeof(*e));
-    e->type = CS_STATUS;
-    strncpy(e->entity_name, entity, sizeof(e->entity_name) - 1);
-    e->status_code = status_code;
-    cs->count++;
-    return true;
-}
-
-bool cs_add_set_str(ChangeSet *cs, const char *entity, const char *field,
-                    const char *str_value, int str_value_len)
-{
-    (void)entity; (void)field; (void)str_value; (void)str_value_len;
-    /* String changes not supported in compact ChangeSet;
-       use ChangeSetFull for full-featured changes. */
-    return false;
-}
-
-/* ═══════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════
    ChangeSetFull — full-featured change set with string support
-   ═══════════════════════════════════════════════════════════════ */
+   ═══════════════════════════════════════════════════════════════════ */
 
 void cs_full_init(ChangeSetFull *cs)
 {
@@ -70,8 +19,8 @@ bool cs_full_add_delta(ChangeSetFull *cs, const char *entity, const char *field,
     ChangeEntryFull *e = &cs->entries[cs->count];
     memset(e, 0, sizeof(*e));
     e->type = CS_VARIABLE;
-    strncpy(e->entity_name, entity, sizeof(e->entity_name) - 1);
-    strncpy(e->field, field, sizeof(e->field) - 1);
+    safe_strcpy(e->entity_name, entity, sizeof(e->entity_name));
+    safe_strcpy(e->field, field, sizeof(e->field));
     e->delta = delta;
     cs->count++;
     return true;
@@ -83,8 +32,8 @@ bool cs_full_add_set_int(ChangeSetFull *cs, const char *entity, const char *fiel
     ChangeEntryFull *e = &cs->entries[cs->count];
     memset(e, 0, sizeof(*e));
     e->type = CS_SET;
-    strncpy(e->entity_name, entity, sizeof(e->entity_name) - 1);
-    strncpy(e->field, field, sizeof(e->field) - 1);
+    safe_strcpy(e->entity_name, entity, sizeof(e->entity_name));
+    safe_strcpy(e->field, field, sizeof(e->field));
     e->new_value = new_value;
     cs->count++;
     return true;
@@ -96,7 +45,7 @@ bool cs_full_add_status(ChangeSetFull *cs, const char *entity, int status_code)
     ChangeEntryFull *e = &cs->entries[cs->count];
     memset(e, 0, sizeof(*e));
     e->type = CS_STATUS;
-    strncpy(e->entity_name, entity, sizeof(e->entity_name) - 1);
+    safe_strcpy(e->entity_name, entity, sizeof(e->entity_name));
     e->status_code = status_code;
     cs->count++;
     return true;
@@ -109,9 +58,9 @@ bool cs_full_add_set_str(ChangeSetFull *cs, const char *entity, const char *fiel
     ChangeEntryFull *e = &cs->entries[cs->count];
     memset(e, 0, sizeof(*e));
     e->type = CS_SET;
-    strncpy(e->entity_name, entity, sizeof(e->entity_name) - 1);
-    strncpy(e->field, field, sizeof(e->field) - 1);
-    strncpy(e->str_value, str_value, sizeof(e->str_value) - 1);
+    safe_strcpy(e->entity_name, entity, sizeof(e->entity_name));
+    safe_strcpy(e->field, field, sizeof(e->field));
+    safe_strcpy(e->str_value, str_value, sizeof(e->str_value));
     cs->count++;
     return true;
 }
@@ -123,8 +72,8 @@ bool cs_full_add_clamp(ChangeSetFull *cs, const char *entity, const char *field,
     ChangeEntryFull *e = &cs->entries[cs->count];
     memset(e, 0, sizeof(*e));
     e->type = CS_CLAMP;
-    strncpy(e->entity_name, entity, sizeof(e->entity_name) - 1);
-    strncpy(e->field, field, sizeof(e->field) - 1);
+    safe_strcpy(e->entity_name, entity, sizeof(e->entity_name));
+    safe_strcpy(e->field, field, sizeof(e->field));
     e->clamp_min = min_val;
     e->clamp_max = max_val;
     cs->count++;
@@ -222,11 +171,13 @@ static void cs_apply_one(const ChangeEntryFull *e, CharacterCard *target,
         if (e->str_value[0]) {
             /* String set */
             if (strcmp(e->field, "name") == 0) {
-                strncpy(target->name, e->str_value, MAX_NAME_LEN - 1);
+                safe_strcpy(target->name, e->str_value, MAX_NAME_LEN);
             } else if (strcmp(e->field, "clothing") == 0) {
-                strncpy(target->clothing, e->str_value, MAX_CLOTHING_LEN - 1);
+                safe_strcpy(target->clothing, e->str_value, MAX_CLOTHING_LEN);
             } else if (strcmp(e->field, "personality") == 0) {
-                strncpy(target->personality, e->str_value, MAX_PERSONALITY_LEN - 1);
+                safe_strcpy(target->personality, e->str_value, MAX_PERSONALITY_LEN);
+            } else if (strcmp(e->field, "gender") == 0) {
+                safe_strcpy(target->gender, e->str_value, MAX_GENDER_LEN);
             }
         } else {
             /* Integer set */
@@ -294,10 +245,6 @@ static void cs_apply_one(const ChangeEntryFull *e, CharacterCard *target,
         }
         break;
 
-    case CS_RELATION:
-        /* Relation changes are handled via field parsing above */
-        break;
-
     case CS_CLAMP:
         /* Read current field value, then clamp to [clamp_min, clamp_max] */
         {
@@ -326,16 +273,16 @@ static void cs_apply_one(const ChangeEntryFull *e, CharacterCard *target,
                 ChangeEntryFull set_e;
                 memset(&set_e, 0, sizeof(set_e));
                 set_e.type = CS_SET;
-                strncpy(set_e.entity_name, e->entity_name, sizeof(set_e.entity_name) - 1);
-                strncpy(set_e.field, e->field, sizeof(set_e.field) - 1);
+                safe_strcpy(set_e.entity_name, e->entity_name, sizeof(set_e.entity_name));
+                safe_strcpy(set_e.field, e->field, sizeof(set_e.field));
                 set_e.new_value = e->clamp_min;
                 cs_apply_one(&set_e, target, events, tick);
             } else if (cur > e->clamp_max) {
                 ChangeEntryFull set_e;
                 memset(&set_e, 0, sizeof(set_e));
                 set_e.type = CS_SET;
-                strncpy(set_e.entity_name, e->entity_name, sizeof(set_e.entity_name) - 1);
-                strncpy(set_e.field, e->field, sizeof(set_e.field) - 1);
+                safe_strcpy(set_e.entity_name, e->entity_name, sizeof(set_e.entity_name));
+                safe_strcpy(set_e.field, e->field, sizeof(set_e.field));
                 set_e.new_value = e->clamp_max;
                 cs_apply_one(&set_e, target, events, tick);
             }

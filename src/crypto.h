@@ -24,12 +24,4 @@ char *crypto_encrypt(const char *plain);
 /* 解密 Base64 密文，返回明文（需 free） */
 char *crypto_decrypt(const char *b64_cipher);
 
-/* 加密并保存到文件 */
-bool crypto_save(const char *filename, const char *endpoint,
-                 const char *key, const char *model);
-
-/* 从文件读取并解密，out_* 为 NULL 时不读取该项 */
-bool crypto_load(const char *filename, char *out_endpoint, int ep_size,
-                 char *out_key, int key_size, char *out_model, int md_size);
-
 #endif

@@ -19,7 +19,8 @@ char *backend_activate_profile(const char *name);
 
 /* World creation */
 char *backend_create_world(const char *name, const char *age,
-                           const char *clothing, const char *money,
+                           const char *gender, const char *clothing,
+                           const char *money,
                            const char *app, const char *con, const char *intel,
                            const char *skills, const char *items,
                            const char *story);
@@ -40,6 +41,12 @@ char *backend_travel(const char *from, const char *to,
 
 /* Get full game state (JSON) */
 char *backend_get_state(void);
+
+/* Delete a map location point (level 0=spot, 1=district, 2=area) */
+char *backend_delete_location(const char *level_str, const char *name);
+
+/* Get chat history (JSON array) */
+char *backend_get_chat_history(void);
 
 /* Check if world is ready */
 bool backend_world_ready(void);

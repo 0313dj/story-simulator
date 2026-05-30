@@ -6,7 +6,7 @@
 #define MAX_AREA_LEN    32  /* 大地点 */
 #define MAX_DISTRICT_LEN 32  /* 小地点 */
 #define MAX_SPOT_LEN    32  /* 具体地点 */
-#define MAX_ERA_LEN     64  /* 时代环境 */
+#define MAX_ERA_LEN     256  /* 时代环境 */
 
 /* 天气 */
 typedef enum {
@@ -78,9 +78,6 @@ void env_set_era(Environment *env, const char *era);
 
 /* 根据年月日自动推算星期（Zeller公式） */
 Weekday env_calc_weekday(int year, int month, int day);
-
-/* 打印环境信息 */
-void env_print(const Environment *env);
 
 /* 天气名/星期名 */
 const char *weather_str(Weather w);

@@ -54,10 +54,4 @@ bool mem_add(MemoryStore *store, const char *content,
 /* 清理过期记忆：短期超过8h(480min)、长期超过30天(43200min) */
 void mem_cleanup(MemoryStore *store, const GameTime *now);
 
-/* 打印所有记忆 */
-void mem_print(const MemoryStore *store);
-
-/* 获取记忆类型名 */
-const char *mem_type_str(MemoryType t);
-
 #endif

@@ -160,7 +160,7 @@ float intent_recognize_level1(const char *user_input, const char *known_names,
     if (!user_input || !*user_input) return 0.0f;
 
     /* Store original input in parameters */
-    strncpy(result->parameters, user_input, INTENT_MAX_PARAMS_LEN - 1);
+    safe_strcpy(result->parameters, user_input, INTENT_MAX_PARAMS_LEN);
 
     /* Score each intent rule */
     int best_idx = -1;
@@ -315,11 +315,11 @@ bool intent_recognize_level3(ApiClient *api, const char *user_input,
     else result->type = INTENT_UNKNOWN;
 
     if (target_str[0]) {
-        strncpy(result->target, target_str, INTENT_MAX_TARGET_LEN - 1);
+        safe_strcpy(result->target, target_str, INTENT_MAX_TARGET_LEN);
     }
     result->confidence = conf > 0.0f ? conf : 0.8f;
     if (result->confidence > 1.0f) result->confidence = 1.0f;
-    strncpy(result->parameters, user_input, INTENT_MAX_PARAMS_LEN - 1);
+    safe_strcpy(result->parameters, user_input, INTENT_MAX_PARAMS_LEN);
 
     return true;
 }

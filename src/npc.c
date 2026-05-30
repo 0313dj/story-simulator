@@ -21,12 +21,9 @@ bool npc_add_temp(NpcManager *mgr, const char *name, const char *desc, const cha
 {
     if (mgr->temp_count >= MAX_TEMP_NPCS) return false;
     TempNpc *t = &mgr->temps[mgr->temp_count];
-    strncpy(t->name,        name, MAX_NPC_NAME - 1);
-    strncpy(t->description, desc, MAX_NPC_DESC - 1);
-    strncpy(t->location,    loc,  MAX_NPC_LOC  - 1);
-    t->name[MAX_NPC_NAME - 1]        = '\0';
-    t->description[MAX_NPC_DESC - 1] = '\0';
-    t->location[MAX_NPC_LOC - 1]     = '\0';
+    safe_strcpy(t->name,        name, MAX_NPC_NAME);
+    safe_strcpy(t->description, desc, MAX_NPC_DESC);
+    safe_strcpy(t->location,    loc,  MAX_NPC_LOC);
     mgr->temp_count++;
     return true;
 }
@@ -88,51 +85,6 @@ int npc_export_present(const NpcManager *mgr, char *out, int out_size)
     return pos;
 }
 
-int npc_export_roster(const CharacterCard *npcs, int npc_count,
-    const Environment *env, char *out, int out_size)
-{
-    /* Bug #43: guard against NULL env */
-    if (!env || !npcs || !out || out_size <= 0) return 0;
-    int pos = 0;
-    pos += snprintf(out + pos, out_size - pos,
-        "当前时间: %d年%02d月%02d日 %s %02d:%02d\n"
-        "当前地点: %s / %s / %s\n\n",
-        env->time.year, env->time.month, env->time.day,
-        weekday_str(env->time.weekday),
-        env->time.hour, env->time.minute,
-        env->location.area, env->location.district, env->location.spot);
-
-    for (int i = 0; i < npc_count; i++) {
-        const CharacterCard *c = &npcs[i];
-        const char *st;
-        switch (c->status) {
-            case STATUS_NORMAL:  st = "正常"; break;
-            case STATUS_HUNGRY:  st = "饥饿"; break;
-            case STATUS_TIRED:   st = "疲惫"; break;
-            case STATUS_SICK:    st = "生病"; break;
-            case STATUS_INJURED: st = "受伤"; break;
-            case STATUS_EXCITED: st = "兴奋"; break;
-            case STATUS_ANGRY:   st = "愤怒"; break;
-            case STATUS_SAD:     st = "悲伤"; break;
-            case STATUS_HAPPY:   st = "开心"; break;
-            default: st = "正常"; break;
-        }
-        pos += snprintf(out + pos, out_size - pos,
-            "%s | 年龄:%d | 身份:%s | 衣着:%s | 状态:%s | 金钱:%dG\n",
-            c->name, c->age, c->personality, c->clothing, st, c->money);
-        if (c->skill_count > 0) {
-            pos += snprintf(out + pos, out_size - pos, "  技能: ");
-            for (int k = 0; k < c->skill_count; k++)
-                pos += snprintf(out + pos, out_size - pos,
-                    "%s(Lv.%d) ", c->skills[k].name, c->skills[k].level);
-            pos += snprintf(out + pos, out_size - pos, "\n");
-        }
-        pos += snprintf(out + pos, out_size - pos,
-            "  对玩家好感度: %+d\n", c->player_affinity);
-    }
-    return pos;
-}
-
 bool npc_parse_spawn_line(const char *line, NpcSpawn *sp)
 {
     /* 格式: name|MUST|location  或  name|MAYBE|location  或  name|NEVER */
@@ -149,7 +101,7 @@ bool npc_parse_spawn_line(const char *line, NpcSpawn *sp)
     *s2 = '\0';
     if (s3) *s3 = '\0';
 
-    strncpy(sp->name, s1, MAX_NPC_NAME - 1);
+    safe_strcpy(sp->name, s1, MAX_NPC_NAME);
 
     if (strstr(s2 + 1, "MUST") || strstr(s2 + 1, "must") || strstr(s2 + 1, "一定"))
         sp->category = 0;
@@ -159,7 +111,7 @@ bool npc_parse_spawn_line(const char *line, NpcSpawn *sp)
         sp->category = 2;
 
     if (s3) {
-        strncpy(sp->location, s3 + 1, MAX_NPC_LOC - 1);
+        safe_strcpy(sp->location, s3 + 1, MAX_NPC_LOC);
     }
     return true;
 }
@@ -178,8 +130,8 @@ bool npc_parse_temp_line(const char *line, TempNpc *tp)
     if (!s1 || !s2) return false;
     *s2 = '\0';
 
-    strncpy(tp->name, s1, MAX_NPC_NAME - 1);
-    strncpy(tp->description, s2 + 1, MAX_NPC_DESC - 1);
+    safe_strcpy(tp->name, s1, MAX_NPC_NAME);
+    safe_strcpy(tp->description, s2 + 1, MAX_NPC_DESC);
     return true;
 }
 
@@ -278,18 +230,18 @@ static void apply_create_line(CharacterCard *card, const char *line)
         char *req = strchr(val, '=');
         if (rplus) {
             *rplus = '\0';
-            strncpy(rtype_str, val, sizeof(rtype_str) - 1);
+            safe_strcpy(rtype_str, val, sizeof(rtype_str));
             aff = atoi(rplus + 1);
         } else if (rminus) {
             *rminus = '\0';
-            strncpy(rtype_str, val, sizeof(rtype_str) - 1);
+            safe_strcpy(rtype_str, val, sizeof(rtype_str));
             aff = -atoi(rminus + 1);
         } else if (req) {
             *req = '\0';
-            strncpy(rtype_str, val, sizeof(rtype_str) - 1);
+            safe_strcpy(rtype_str, val, sizeof(rtype_str));
             aff = atoi(req + 1);
         } else {
-            strncpy(rtype_str, val, sizeof(rtype_str) - 1);
+            safe_strcpy(rtype_str, val, sizeof(rtype_str));
             aff = 0;
         }
 
@@ -320,13 +272,17 @@ static void apply_create_line(CharacterCard *card, const char *line)
     if (is_delta < 0) ival = -ival;
 
     if (strcmp(key, "name") == 0) {
-        strncpy(card->name, val, MAX_NAME_LEN - 1);
+        safe_strcpy(card->name, val, MAX_NAME_LEN);
     } else if (strcmp(key, "age") == 0) {
         card->age = is_delta ? card->age + ival : atoi(val);
     } else if (strcmp(key, "personality") == 0) {
-        strncpy(card->personality, val, MAX_PERSONALITY_LEN - 1);
+        safe_strcpy(card->personality, val, MAX_PERSONALITY_LEN);
     } else if (strcmp(key, "clothing") == 0) {
-        strncpy(card->clothing, val, MAX_CLOTHING_LEN - 1);
+        safe_strcpy(card->clothing, val, MAX_CLOTHING_LEN);
+    } else if (strcmp(key, "gender") == 0) {
+        safe_strcpy(card->gender, val, MAX_GENDER_LEN);
+    } else if (strcmp(key, "home") == 0) {
+        safe_strcpy(card->home, val, MAX_HOME_LEN);
     } else if (strcmp(key, "money") == 0) {
         card->money = is_delta ? card->money + ival : atoi(val);
         if (card->money < 0) card->money = 0;

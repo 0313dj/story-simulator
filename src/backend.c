@@ -30,6 +30,19 @@
 
 /* MAX_NPC_CARDS defined in npc.h (Bug #51) */
 
+/* ── Chat history persistence ── */
+#define MAX_CHAT_MSGS      512
+#define MAX_CHAT_TEXT      2048
+
+typedef struct {
+    char role[16];       /* "player" or "ai" */
+    char text[MAX_CHAT_TEXT];
+    long long tick;
+} ChatMsg;
+
+static ChatMsg g_chat_history[MAX_CHAT_MSGS];
+static int    g_chat_count = 0;
+
 /* ── Global game state ── */
 static CharacterCard  g_player;
 static CharacterCard  g_npc_cards[MAX_NPC_CARDS];
@@ -40,6 +53,7 @@ static ApiClient      g_api;
 static GameMap        g_map;
 static bool           g_api_ready;
 static bool           g_world_ready;
+static char           g_saves_root[512];  /* absolute path to saves directory */
 static CRITICAL_SECTION g_state_lock;
 
 /* ── USE Architecture: WorldState (canonical) + EventLog ── */
@@ -75,28 +89,6 @@ static void ws_sync_from_globals(void)
     g_ws.schema_version = WS_SCHEMA_VERSION;
 }
 
-/* ── Sync WorldState → runtime globals (for future Phase 1+ use) ── */
-__attribute__((unused))
-static void ws_sync_to_globals(void)
-{
-    /* Player */
-    g_player = g_ws.entities[0];
-
-    /* NPCs */
-    g_npc_card_count = g_ws.entity_count > 0 ? g_ws.entity_count - 1 : 0;
-    if (g_npc_card_count > MAX_NPC_CARDS) g_npc_card_count = MAX_NPC_CARDS;
-    for (int i = 0; i < g_npc_card_count; i++)
-        g_npc_cards[i] = g_ws.entities[1 + i];
-
-    /* Calendar */
-    g_env = g_ws.calendar;
-
-    /* Map */
-    g_map = g_ws.map;
-
-    /* NPC manager */
-    g_npc_mgr = g_ws.npc_mgr;
-}
 
 /* ── forward ── */
 static char *build_state_json(void);
@@ -209,6 +201,7 @@ static void state_player_json(JsonBuf *j)
     jb_obj_open(j);
     jb_kv_str(j, "name", g_player.name);
     jb_kv_int(j, "age", g_player.age);
+    jb_kv_str(j, "gender", g_player.gender);
     jb_kv_int(j, "money", g_player.money);
     jb_kv_str(j, "clothing", g_player.clothing);
     jb_kv_int(j, "status", (int)g_player.status);
@@ -335,8 +328,10 @@ static void state_npcs_json(JsonBuf *j)
         jb_obj_open(j);
         jb_kv_str(j, "name", g_npc_cards[i].name);
         jb_kv_int(j, "age", g_npc_cards[i].age);
+        jb_kv_str(j, "gender", g_npc_cards[i].gender);
         jb_kv_str(j, "clothing", g_npc_cards[i].clothing);
         jb_kv_str(j, "personality", g_npc_cards[i].personality);
+        jb_kv_str(j, "home", g_npc_cards[i].home);
         jb_kv_int(j, "status", (int)g_npc_cards[i].status);
         {
             const char *st = "正常";
@@ -402,6 +397,24 @@ static char *build_state_json(void)
     jb_kv_bool(&j, "ok", 1);
     jb_kv_bool(&j, "worldReady", g_world_ready);
     jb_kv_bool(&j, "apiReady", g_api_ready);
+
+    /* Token usage stats */
+    {
+        long long tok_prompt = 0, tok_completion = 0, tok_total = 0;
+        int calls = api_get_token_usage(&g_api, &tok_prompt, &tok_completion, &tok_total);
+        jb_str(&j, ",\"tokenUsage\":{");
+        jb_kv_int(&j, "calls", calls);
+        {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%lld", tok_total);
+            jb_kv_str(&j, "total", buf);
+            snprintf(buf, sizeof(buf), "%lld", tok_prompt);
+            jb_kv_str(&j, "prompt", buf);
+            snprintf(buf, sizeof(buf), "%lld", tok_completion);
+            jb_kv_str(&j, "completion", buf);
+        }
+        jb_str(&j, "}");
+    }
 
     /* USE Architecture: schema version and tick */
     jb_kv_int(&j, "schemaVersion", WS_SCHEMA_VERSION);
@@ -494,12 +507,12 @@ static bool write_json_file(const char *path, const char *json)
 
 static bool save_to_file(const char *name)
 {
-    char dir[512];
-    snprintf(dir, sizeof(dir), "saves\\%s", name);
+    char dir[576];
+    snprintf(dir, sizeof(dir), "%s\\%s", g_saves_root, name);
 
-    /* Create directory — ensure full path exists */
-    wchar_t wdir[512];
-    MultiByteToWideChar(CP_UTF8, 0, dir, -1, wdir, 512);
+    /* Create target directory — ensure full path exists */
+    wchar_t wdir[576];
+    MultiByteToWideChar(CP_UTF8, 0, dir, -1, wdir, 576);
     if (!CreateDirectoryW(wdir, NULL)) {
         DWORD err = GetLastError();
         if (err != ERROR_ALREADY_EXISTS) {
@@ -633,6 +646,29 @@ static bool save_to_file(const char *name)
         free(json);
     }
 
+    /* ── 7. chat.json (chat history) ── */
+    {
+        JsonBuf j; jb_init(&j); jb_arr_open(&j);
+        for (int i = 0; i < g_chat_count; i++) {
+            if (i > 0) jb_str(&j, ",");
+            jb_obj_open(&j);
+            jb_kv_str(&j, "role", g_chat_history[i].role);
+            jb_kv_str(&j, "text", g_chat_history[i].text);
+            {
+                char tick_str[32];
+                snprintf(tick_str, sizeof(tick_str), "%lld", g_chat_history[i].tick);
+                jb_kv_str(&j, "tick", tick_str);
+            }
+            jb_obj_close(&j);
+        }
+        jb_arr_close(&j);
+        char *json = jb_detach(&j);
+        char path[576]; snprintf(path, sizeof(path), "%s\\chat.json", dir);
+        if (!write_json_file(path, json)) ok = false;
+        else log_info("save: chat.json (%d bytes, %d messages)", (int)strlen(json), g_chat_count);
+        free(json);
+    }
+
     if (ok)
         log_info("save: 成功写入 %s", name);
     else
@@ -759,8 +795,10 @@ static void parse_npc_obj(const char *obj, void *ud, int idx)
     memset(cc, 0, sizeof(*cc));
     json_get_str(obj, "name", cc->name, 64);
     json_get_int(obj, "age", &cc->age);
+    json_get_str(obj, "gender", cc->gender, MAX_GENDER_LEN);
     json_get_str(obj, "clothing", cc->clothing, MAX_CLOTHING_LEN);
     json_get_str(obj, "personality", cc->personality, MAX_PERSONALITY_LEN);
+    json_get_str(obj, "home", cc->home, MAX_HOME_LEN);
     json_get_int(obj, "status", (int*)&cc->status);
     json_get_int(obj, "money", &cc->money);
     json_get_int(obj, "appearance", &cc->attr.appearance);
@@ -801,6 +839,7 @@ static void parse_player_scope(const char *scope)
 {
     json_get_str(scope, "name",     g_player.name, 64);
     json_get_int(scope, "age",      &g_player.age);
+    json_get_str(scope, "gender",   g_player.gender, MAX_GENDER_LEN);
     json_get_int(scope, "money",    &g_player.money);
     json_get_str(scope, "clothing", g_player.clothing, MAX_CLOTHING_LEN);
     json_get_int(scope, "status",   (int*)&g_player.status);
@@ -819,8 +858,8 @@ static void parse_player_scope(const char *scope)
 
 static bool load_from_file(const char *name)
 {
-    char dir[512];
-    snprintf(dir, sizeof(dir), "saves\\%s", name);
+    char dir[576];
+    snprintf(dir, sizeof(dir), "%s\\%s", g_saves_root, name);
     log_info("load: 尝试读取 %s", dir);
 
     /* ── New format: folder with character.json + npcs.json + world.json ── */
@@ -1035,6 +1074,44 @@ static bool load_from_file(const char *name)
             }
         }
 
+        /* ── Load chat history (chat.json, optional) ── */
+        {
+            char ch_path2[576];
+            snprintf(ch_path2, sizeof(ch_path2), "%s\\chat.json", dir);
+            char *ch_json = slurp_file(ch_path2);
+            if (ch_json) {
+                g_chat_count = 0;
+                const char *p = ch_json;
+                while (*p && *p != '[') p++;
+                if (*p == '[') {
+                    p++;
+                    while (*p && g_chat_count < MAX_CHAT_MSGS) {
+                        while (*p == ' ' || *p == '\n' || *p == '\r' || *p == ',') p++;
+                        if (*p == ']' || *p == '\0') break;
+                        if (*p == '{') {
+                            ChatMsg *cm = &g_chat_history[g_chat_count];
+                            memset(cm, 0, sizeof(*cm));
+                            json_get_str(p, "role", cm->role, sizeof(cm->role));
+                            json_get_str(p, "text", cm->text, sizeof(cm->text));
+                            {
+                                const char *tk = strstr(p, "\"tick\":");
+                                if (tk) {
+                                    tk = strchr(tk, ':');
+                                    if (tk) cm->tick = (long long)atoll(tk + 1);
+                                }
+                            }
+                            if (cm->role[0] && cm->text[0]) g_chat_count++;
+                            p = strchr(p, '}');
+                            if (!p) break;
+                        }
+                        p++;
+                    }
+                }
+                free(ch_json);
+                log_info("load: 恢复了 %d 条聊天记录", g_chat_count);
+            }
+        }
+
         /* Sync WorldState from loaded globals */
         ws_sync_from_globals();
 
@@ -1061,18 +1138,13 @@ static bool load_from_file(const char *name)
 
     /* ── Old format: single binary-wrapped JSON file ── */
     {
-        char old_path[512];
-        snprintf(old_path, sizeof(old_path), "saves\\%s.dat", name);
-        /* Remove trailing / for autosave case */
-        char *dot = strrchr(old_path, '/');
-        if (!dot) {
-            /* name is like "autosave" — old file is saves\autosave */
-        }
+        char old_path[576];
+        snprintf(old_path, sizeof(old_path), "%s\\%s.dat", g_saves_root, name);
 
         FILE *fp = fopen(old_path, "rb");
         if (!fp) {
-            /* Try alternate: some old saves were just "saves\<name>" */
-            snprintf(old_path, sizeof(old_path), "saves\\%s", name);
+            /* Try alternate: name without .dat extension */
+            snprintf(old_path, sizeof(old_path), "%s\\%s", g_saves_root, name);
             fp = fopen(old_path, "rb");
         }
         if (!fp) return false;
@@ -1238,9 +1310,11 @@ static int npc_compact_line(const CharacterCard *c, char *out, int out_size)
         case STATUS_HAPPY:   st="开心"; break;
     }
     return snprintf(out, out_size,
-        "%s | 年龄:%d | %s | 状态:%s | 好感%+d\n",
+        "%s | 年龄:%d | %s%s%s | 状态:%s | 好感%+d\n",
         c->name, c->age,
         c->personality[0] ? c->personality : "?",
+        c->home[0] ? " 家:" : "",
+        c->home[0] ? c->home : "",
         st, c->player_affinity);
 }
 
@@ -1261,8 +1335,10 @@ static int npc_full_entry(const CharacterCard *c, char *out, int out_size)
         case STATUS_HAPPY:   st="开心"; break;
     }
     p += snprintf(out + p, out_size - p,
-        "%s | 年龄:%d | 性格:%s | 状态:%s | 金钱:%dG\n",
+        "%s | 年龄:%d | 性格:%s | 状态:%s | 金钱:%dG",
         c->name, c->age, c->personality, st, c->money);
+    if (c->home[0]) p += snprintf(out + p, out_size - p, " | 住所:%s", c->home);
+    p += snprintf(out + p, out_size - p, "\n");
     if (c->skill_count > 0) {
         p += snprintf(out + p, out_size - p, "  技能: ");
         for (int k = 0; k < c->skill_count; k++)
@@ -1295,7 +1371,10 @@ static int next_save_number(void)
     int max = 0;
     WIN32_FIND_DATAW fd;
     /* Match both old .dat files and new folder saves */
-    HANDLE h = FindFirstFileW(L"saves\\save_*", &fd);
+    wchar_t wpattern[576];
+    MultiByteToWideChar(CP_UTF8, 0, g_saves_root, -1, wpattern, 576);
+    wcscat(wpattern, L"\\save_*");
+    HANDLE h = FindFirstFileW(wpattern, &fd);
     if (h == INVALID_HANDLE_VALUE) return 1;
     do {
         int n = 0;
@@ -1312,7 +1391,7 @@ static void build_var_catalog(char *out, int out_size)
     int p = 0;
     p += snprintf(out + p, out_size - p,
         "【玩家属性变量】\n"
-        "name(姓名) age(年龄) clothing(衣着) status(状态) money(金钱)\n"
+        "name(姓名) age(年龄) gender(性别) clothing(衣着) status(状态) money(金钱)\n"
         "attr.appearance(颜值) attr.constitution(体质) attr.intelligence(智力)\n");
     if (g_player.skill_count > 0) {
         p += snprintf(out + p, out_size - p, "技能变量: ");
@@ -1495,6 +1574,7 @@ static void apply_response(FullResponse *resp)
         }
 
         /* Step B: Parse structured ActionProposal JSON */
+        int ap_count_before_json = ap.count;
         if (resp->action_proposal[0]) {
             const char *p = resp->action_proposal;
             while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') p++;
@@ -1546,6 +1626,8 @@ static void apply_response(FullResponse *resp)
                 }
                 p = close + 1;
             }
+            log_info("apply_response: parsed %d actions from ACTION_PROPOSAL JSON",
+                     ap.count - ap_count_before_json);
         }
 
         /* Step C: Process combined ActionProposal through Rule Engine ONCE */
@@ -1555,8 +1637,11 @@ static void apply_response(FullResponse *resp)
             int rules_fired = re_process_proposal(&g_rule_engine, &ap,
                 &g_player, g_npc_cards, g_npc_card_count, &g_ws,
                 &cs, &g_events, g_ws.tick);
+            log_info("apply_response: re_process_proposal returned %d rules_fired, cs.count=%d",
+                     rules_fired, cs.count);
             cs_apply(&cs, &g_player, g_npc_cards, g_npc_card_count,
                      &g_events, g_ws.tick);
+            log_info("apply_response: cs_apply completed");
             log_info("apply_response: ChangeSet applied (%d entries, %d rules fired)",
                      cs.count, rules_fired);
         } else {
@@ -1675,6 +1760,7 @@ static void apply_response(FullResponse *resp)
             line = strtok_s(NULL, "\n", &spctx);
         }
         npc_set_spawns(&g_npc_mgr, list, count);
+        log_info("apply_response: npc_set_spawns done, spawn_count=%d", g_npc_mgr.spawn_count);
         for (int i=0; i<g_npc_mgr.spawn_count; i++)
             for (int j=0; j<g_npc_card_count; j++)
                 if (strcmp(g_npc_cards[j].name, g_npc_mgr.spawns[i].name)==0)
@@ -1703,6 +1789,7 @@ static void apply_response(FullResponse *resp)
                 g_npc_cards[g_npc_card_count++] = nc;
             }
             log_info("新NPC: %s", nc.name);
+            log_info("apply_response: npc_parse_create done, npc_count=%d", g_npc_card_count);
         }
     }
     for (int i=g_npc_card_count-1; i>=0; i--) {
@@ -1722,8 +1809,27 @@ static void apply_response(FullResponse *resp)
 bool backend_init(void)
 {
     InitializeCriticalSection(&g_state_lock);
-    log_init("saves");
+
+    /* Build absolute saves root: <exe_dir>\saves */
+    {
+        wchar_t edir[512];
+        GetModuleFileNameW(NULL, edir, 512);
+        wchar_t *slash = wcsrchr(edir, L'\\');
+        if (slash) *slash = L'\0';
+        /* Convert to UTF-8 and append \saves */
+        WideCharToMultiByte(CP_UTF8, 0, edir, -1,
+                            g_saves_root, (int)sizeof(g_saves_root), NULL, NULL);
+        int len = (int)strlen(g_saves_root);
+        snprintf(g_saves_root + len, sizeof(g_saves_root) - len, "\\saves");
+        /* Create saves directory */
+        wchar_t wsaves[576];
+        MultiByteToWideChar(CP_UTF8, 0, g_saves_root, -1, wsaves, 576);
+        CreateDirectoryW(wsaves, NULL);
+    }
+
+    log_init(g_saves_root);
     log_info("--- 模拟器启动 ---");
+    log_info("saves root: %s", g_saves_root);
 
     cc_init(&g_player, ENTITY_PLAYER);
     env_init(&g_env);
@@ -1745,15 +1851,15 @@ bool backend_init(void)
     ApiProfile profiles[MAX_API_PROFILES];
     int pc = crypto_load_profiles(profiles, MAX_API_PROFILES);
     if (pc > 0) {
-        strncpy(ep,  profiles[0].endpoint, sizeof(ep)-1);
-        strncpy(key, profiles[0].api_key,  sizeof(key)-1);
-        strncpy(md,  profiles[0].model,    sizeof(md)-1);
+        safe_strcpy(ep,  profiles[0].endpoint, sizeof(ep));
+        safe_strcpy(key, profiles[0].api_key,  sizeof(key));
+        safe_strcpy(md,  profiles[0].model,    sizeof(md));
         log_info("加载了 %d 个API配置", pc);
     } else {
         const char *e,*k,*m;
-        if ((e=getenv("SIM_API_ENDPOINT"))) strncpy(ep,e,sizeof(ep)-1);
-        if ((k=getenv("SIM_API_KEY")))      strncpy(key,k,sizeof(key)-1);
-        if ((m=getenv("SIM_API_MODEL")))    strncpy(md,m,sizeof(md)-1);
+        if ((e=getenv("SIM_API_ENDPOINT"))) safe_strcpy(ep,e,sizeof(ep));
+        if ((k=getenv("SIM_API_KEY")))      safe_strcpy(key,k,sizeof(key));
+        if ((m=getenv("SIM_API_MODEL")))    safe_strcpy(md,m,sizeof(md));
     }
     api_init(&g_api, ep, key, md);
     g_api_ready = (key[0]!='\0');
@@ -1833,10 +1939,10 @@ char *backend_save_profile(const char *name, const char *ep,
         if (n>=MAX_API_PROFILES) { LeaveCriticalSection(&g_state_lock); return err_json("上限"); }
         idx = n++;
     }
-    strncpy(pro[idx].name, name, MAX_PROFILE_NAME-1);
-    strncpy(pro[idx].endpoint, ep, 255);
-    strncpy(pro[idx].api_key, key, 255);
-    strncpy(pro[idx].model, md, 63);
+    safe_strcpy(pro[idx].name, name, MAX_PROFILE_NAME);
+    safe_strcpy(pro[idx].endpoint, ep, sizeof(pro[idx].endpoint));
+    safe_strcpy(pro[idx].api_key, key, sizeof(pro[idx].api_key));
+    safe_strcpy(pro[idx].model, md, sizeof(pro[idx].model));
     char *r;
     if (crypto_save_profiles(pro, n)) {
         api_init(&g_api, ep, key, md); g_api_ready=(key[0]!='\0');
@@ -1892,6 +1998,28 @@ char *backend_send_message(const char *text)
     log_info("========================================");
     log_info("SEND_MSG: player=%.30s text=%.60s", g_player.name, text);
     log_info("SEND_MSG: Pipeline START");
+
+    /* ── Token-saving: detect same-location continuation ──
+       If the last narrative was generated at the current location,
+       prepend "(续前场景)" to user input.  The system prompt instructs
+       the AI to skip environment re-description when it sees this flag.
+       This saves ~300 tokens per request vs. injecting 200 chars of
+       previous narrative text. */
+    char final_text[1024];
+    {
+        char cur_loc[256];
+        snprintf(cur_loc, sizeof(cur_loc), "%s/%s/%s",
+                 g_env.location.area, g_env.location.district, g_env.location.spot);
+        WorldVariable *last_loc = ws_find_variable(&g_ws, "last_narrative_location");
+        if (last_loc && last_loc->type == VAR_STRING &&
+            last_loc->str_val[0] &&
+            strcmp(last_loc->str_val, cur_loc) == 0) {
+            snprintf(final_text, sizeof(final_text), "(续前场景) %s", text);
+            log_info("SEND_MSG: same location, prepended continuation flag");
+        } else {
+            safe_strcpy(final_text, text, sizeof(final_text));
+        }
+    }
 
     /* ═══════════════════════════════════════════════════════════
        Stage 3: NPC Brain ticks
@@ -2106,7 +2234,7 @@ char *backend_send_message(const char *text)
         if (intent.target[0]) {
             snprintf(plan.steps[0].action, sizeof(plan.steps[0].action),
                 "%s %s", intent_action_verb(intent.type), intent.target);
-            strncpy(plan.steps[0].target, intent.target, PLAN_MAX_TARGET_LEN - 1);
+            safe_strcpy(plan.steps[0].target, intent.target, PLAN_MAX_TARGET_LEN);
         } else {
             snprintf(plan.steps[0].action, sizeof(plan.steps[0].action),
                 "%s", text);
@@ -2139,6 +2267,36 @@ char *backend_send_message(const char *text)
            to make room — avoids a second large heap allocation. */
         char prefix[4096];
         int pp = 0;
+
+        /* ── Recent story summary for coherence ── */
+        {
+            MemoryStore *mem = &g_player.memory;
+            int recent_count = 0;
+            pp += snprintf(prefix + pp, sizeof(prefix) - pp,
+                "═══ 近期事件回顾 ═══\n");
+            /* Short-term memories (last 5) */
+            int st_start = mem->short_count > 5 ? mem->short_count - 5 : 0;
+            for (int i = st_start; i < mem->short_count; i++) {
+                if (mem->short_term[i].content[0]) {
+                    pp += snprintf(prefix + pp, sizeof(prefix) - pp,
+                        "- %s\n", mem->short_term[i].content);
+                    recent_count++;
+                }
+            }
+            /* Long-term memories (last 3, if they don't duplicate short-term) */
+            int lt_start = mem->long_count > 3 ? mem->long_count - 3 : 0;
+            for (int i = lt_start; i < mem->long_count; i++) {
+                if (mem->long_term[i].content[0]) {
+                    pp += snprintf(prefix + pp, sizeof(prefix) - pp,
+                        "- %s\n", mem->long_term[i].content);
+                    recent_count++;
+                }
+            }
+            if (recent_count == 0)
+                pp += snprintf(prefix + pp, sizeof(prefix) - pp, "（暂无）\n");
+            pp += snprintf(prefix + pp, sizeof(prefix) - pp, "\n");
+        }
+
         pp += snprintf(prefix + pp, sizeof(prefix) - pp,
             "═══ 意图与计划 ═══\n"
             "用户意图: %s (置信度: %.0f%%)\n",
@@ -2195,7 +2353,7 @@ char *backend_send_message(const char *text)
         free(jb_detach(&debug_trace));
         LeaveCriticalSection(&g_state_lock); return err_json("内存不足");
     }
-    if (!api_generate(&g_api, text, full_state, resp)) {
+    if (!api_generate(&g_api, final_text, full_state, resp)) {
         char msg[512]; snprintf(msg, sizeof(msg), "AI: %s", api_last_error(&g_api));
         log_error("SEND_MSG: [Stage 6/6] AI generation FAILED: %s", msg);
         free(resp);
@@ -2204,11 +2362,11 @@ char *backend_send_message(const char *text)
         LeaveCriticalSection(&g_state_lock); return err_json(msg);
     }
     fflush(NULL);  // 强制刷新日志，确保 api_generate 的 token 统计落盘
-    log_info("SEND_MSG: [Stage 6/6] AI reply: %d chars text, %d chars changes",
-             (int)strlen(resp->text), (int)strlen(resp->changes));
+    log_info("SEND_MSG: [Stage 6/6] AI reply: text=%d changes=%d action_proposal=%d",
+             (int)strlen(resp->text), (int)strlen(resp->changes),
+             (int)strlen(resp->action_proposal));
 
     /* ── Step 7: Apply response through Rule Engine ── */
-    log_info("SEND_MSG: applying response...");
     apply_response(resp);
 
     /* Sync to WorldState and record events */
@@ -2218,6 +2376,12 @@ char *backend_send_message(const char *text)
     if (resp->text[0]) {
         event_push(&g_events, g_ws.tick, 0, -1, EVENT_NARRATIVE,
                    "{\"text\":\"%.200s\"}", resp->text);
+        /* Save location where narrative was generated, so the next
+           request can detect same-location continuation. */
+        char loc_key[256];
+        snprintf(loc_key, sizeof(loc_key), "%s/%s/%s",
+                 g_env.location.area, g_env.location.district, g_env.location.spot);
+        ws_set_variable(&g_ws, "last_narrative_location", VAR_STRING, 0, 0.0f, loc_key);
     }
 
     /* Debug: rule engine results */
@@ -2252,13 +2416,13 @@ char *backend_send_message(const char *text)
         wr_init(&wr);
 
         /* User input */
-        strncpy(wr.user_input, text, sizeof(wr.user_input) - 1);
+        safe_strcpy(wr.user_input, text, sizeof(wr.user_input));
 
         /* Intent */
-        strncpy(wr.intent_type, intent_type_str(intent.type),
-                sizeof(wr.intent_type) - 1);
+        safe_strcpy(wr.intent_type, intent_type_str(intent.type),
+                sizeof(wr.intent_type));
         if (intent.target[0])
-            strncpy(wr.intent_target, intent.target, sizeof(wr.intent_target) - 1);
+            safe_strcpy(wr.intent_target, intent.target, sizeof(wr.intent_target));
         wr.intent_confidence = intent.confidence;
 
         /* Plan summary */
@@ -2286,7 +2450,7 @@ char *backend_send_message(const char *text)
         if (!resp->text[0]) {
             NarrativeText nt;
             if (narrative_generate(&g_api, &wr, full_state, &nt)) {
-                strncpy(resp->text, nt.text, sizeof(resp->text) - 1);
+                safe_strcpy(resp->text, nt.text, sizeof(resp->text));
                 log_info("Narrative: generated %d chars", (int)strlen(nt.text));
                 jb_str(&debug_trace, ",\"narrative\":{");
                 jb_kv_str(&debug_trace, "source", "generated");
@@ -2356,6 +2520,21 @@ char *backend_send_message(const char *text)
                  calls, tok_prompt, tok_completion, tok_total);
     }
     log_info("========================================");
+
+    /* Record chat messages */
+    if (g_chat_count < MAX_CHAT_MSGS) {
+        ChatMsg *cm = &g_chat_history[g_chat_count++];
+        safe_strcpy(cm->role, "player", sizeof(cm->role));
+        safe_strcpy(cm->text, text, sizeof(cm->text));
+        cm->tick = g_ws.tick;
+    }
+    if (resp->text[0] && g_chat_count < MAX_CHAT_MSGS) {
+        ChatMsg *cm = &g_chat_history[g_chat_count++];
+        safe_strcpy(cm->role, "ai", sizeof(cm->role));
+        safe_strcpy(cm->text, resp->text, sizeof(cm->text));
+        cm->tick = g_ws.tick;
+    }
+
     free(resp);
     free(full_state);
     #undef FS_SIZE
@@ -2364,16 +2543,16 @@ char *backend_send_message(const char *text)
 }
 
 char *backend_create_world(const char *name, const char *age,
-    const char *clothing, const char *money,
+    const char *gender, const char *clothing, const char *money,
     const char *app, const char *con, const char *intel,
     const char *skills, const char *items, const char *story)
 {
     EnterCriticalSection(&g_state_lock);
     if (!g_api_ready) { LeaveCriticalSection(&g_state_lock); return err_json("API 未配置"); }
-    log_info("CREATE_WORLD: name=%s age=%s era based on story...", name, age);
+    log_info("CREATE_WORLD: name=%s age=%s gender=%s...", name, age, gender ? gender : "");
 
     WorldCreateResult wcr;
-    if (!api_create_world(&g_api, name,age,clothing,money,app,con,intel,skills,items,story,&wcr)) {
+    if (!api_create_world(&g_api, name,age,gender,clothing,money,app,con,intel,skills,items,story,&wcr)) {
         const char *e = api_last_error(&g_api);
         log_error("CREATE_WORLD: AI call FAILED: %s", e);
         LeaveCriticalSection(&g_state_lock); return err_json(e);
@@ -2408,6 +2587,29 @@ char *backend_create_world(const char *name, const char *age,
         }
     }
     if (wcr.start_location[0]) env_parse_location(&g_env, wcr.start_location);
+
+    /* Apply era */
+    if (wcr.era[0]) {
+        env_set_era(&g_env, wcr.era);
+        log_info("CREATE_WORLD: era set to '%s'", g_env.era);
+    }
+
+    /* Parse start time: format "年|月|日|时|分|星期" */
+    if (wcr.start_time[0]) {
+        int y = 1, m = 1, d = 1, h = 8, min = 0;
+        if (sscanf(wcr.start_time, "%d|%d|%d|%d|%d",
+                   &y, &m, &d, &h, &min) >= 5) {
+            if (y >= 1 && y <= 9999) g_env.time.year = y;
+            if (m >= 1 && m <= 12)   g_env.time.month = m;
+            if (d >= 1 && d <= 31)   g_env.time.day = d;
+            if (h >= 0 && h <= 23)   g_env.time.hour = h;
+            if (min >= 0 && min <= 59) g_env.time.minute = min;
+            g_env.time.weekday = env_calc_weekday(y, m, d);
+            log_info("CREATE_WORLD: start time set to %d-%02d-%02d %02d:%02d",
+                     g_env.time.year, g_env.time.month, g_env.time.day,
+                     g_env.time.hour, g_env.time.minute);
+        }
+    }
 
     if (wcr.npc_cards[0]) {
         log_info("CREATE_WORLD: starting NPC parsing, buffer:\n%.200s", wcr.npc_cards);
@@ -2477,7 +2679,7 @@ char *backend_create_world(const char *name, const char *age,
     int num = next_save_number();
     log_info("CREATE_WORLD: next_save_number=%d", num);
     char sf[256];
-    snprintf(sf, sizeof(sf), "save_%03d_%s", num, g_player.name);
+    snprintf(sf, sizeof(sf), "save_%03d", num);
     log_info("CREATE_WORLD: saving to %s...", sf);
     bool saved_ok = save_to_file(sf) && save_to_file("autosave");
     log_info("CREATE_WORLD: save result = %d", saved_ok);
@@ -2528,18 +2730,21 @@ char *backend_list_saves(void)
 
     /* Scan save folders (new format) */
     WIN32_FIND_DATAW fd;
-    HANDLE h=FindFirstFileW(L"saves\\save_*",&fd);
+    wchar_t wpattern[576];
+    MultiByteToWideChar(CP_UTF8, 0, g_saves_root, -1, wpattern, 576);
+    wcscat(wpattern, L"\\save_*");
+    HANDLE h = FindFirstFileW(wpattern, &fd);
     if (h!=INVALID_HANDLE_VALUE) {
         do {
             if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
             if (wcscmp(fd.cFileName, L".")==0 || wcscmp(fd.cFileName, L"..")==0) continue;
             char fn[256]; WideCharToMultiByte(CP_UTF8,0,fd.cFileName,-1,fn,sizeof(fn),NULL,NULL);
             /* Read character.json from the folder */
-            char ch_path[576]; snprintf(ch_path,sizeof(ch_path),"saves\\%s\\character.json",fn);
+            char ch_path[576]; snprintf(ch_path,sizeof(ch_path),"%s\\%s\\character.json",g_saves_root,fn);
             char *js = slurp_file(ch_path);
             if (!js) {
                 /* Try old .dat file */
-                char old_path[576]; snprintf(old_path,sizeof(old_path),"saves\\%s.dat",fn);
+                char old_path[576]; snprintf(old_path,sizeof(old_path),"%s\\%s.dat",g_saves_root,fn);
                 js = slurp_file(old_path);
                 if (!js) continue;
                 /* Old binary format — skip magic/version/length header */
@@ -2558,7 +2763,7 @@ char *backend_list_saves(void)
             if (!pn[0]) strcpy(pn,"(未命名)");
             int y=0,m=0,d=0, hh=0,mm=0;
             /* Try world.json for time */
-            char wo_path[576]; snprintf(wo_path,sizeof(wo_path),"saves\\%s\\world.json",fn);
+            char wo_path[576]; snprintf(wo_path,sizeof(wo_path),"%s\\%s\\world.json",g_saves_root,fn);
             char *wo = slurp_file(wo_path);
             if (wo) {
                 const char *es=extract_sub_obj(wo,"environment");
@@ -2617,20 +2822,40 @@ char *backend_load_save(const char *filename)
 char *backend_delete_save(const char *filename)
 {
     EnterCriticalSection(&g_state_lock);
-    /* Delete folder contents first, then the folder */
-    char dir[512]; snprintf(dir,sizeof(dir),"saves\\%s",filename);
-    char ch[576], np[576], wo[576], va[576], ev[576];
-    snprintf(ch,sizeof(ch),"%s\\character.json",dir);
-    snprintf(np,sizeof(np),"%s\\npcs.json",dir);
-    snprintf(wo,sizeof(wo),"%s\\world.json",dir);
-    snprintf(va,sizeof(va),"%s\\variables.json",dir);
-    snprintf(ev,sizeof(ev),"%s\\events.json",dir);
-    DeleteFileA(ch); DeleteFileA(np); DeleteFileA(wo);
-    DeleteFileA(va); DeleteFileA(ev);
-    bool ok = RemoveDirectoryA(dir);
+    bool ok = false;
+
+    /* Safety: reject empty/suspicious filenames */
+    if (!filename || !filename[0] ||
+        strchr(filename, '/') || strchr(filename, '\\') ||
+        strchr(filename, '.') || strchr(filename, ':')) {
+        LeaveCriticalSection(&g_state_lock);
+        return err_json("无效的存档名");
+    }
+
+    /* Build dir path and delete all files inside */
+    char dir[576]; snprintf(dir,sizeof(dir),"%s\\%s",g_saves_root,filename);
+
+    /* Enumerate and delete all files in the directory */
+    WIN32_FIND_DATAW fdata;
+    wchar_t wsearch[640], wdir[576];
+    MultiByteToWideChar(CP_UTF8, 0, dir, -1, wdir, 576);
+    swprintf(wsearch, 640, L"%s\\*", wdir);
+    HANDLE fh = FindFirstFileW(wsearch, &fdata);
+    if (fh != INVALID_HANDLE_VALUE) {
+        do {
+            if (wcscmp(fdata.cFileName, L".") == 0 ||
+                wcscmp(fdata.cFileName, L"..") == 0) continue;
+            wchar_t wfull[640];
+            swprintf(wfull, 640, L"%s\\%s", wdir, fdata.cFileName);
+            DeleteFileW(wfull);
+        } while (FindNextFileW(fh, &fdata));
+        FindClose(fh);
+    }
+    ok = RemoveDirectoryA(dir);
+
     if (!ok) {
         /* Try old single-file format */
-        char old[576]; snprintf(old,sizeof(old),"saves\\%s.dat",filename);
+        char old[576]; snprintf(old,sizeof(old),"%s\\%s.dat",g_saves_root,filename);
         ok = DeleteFileA(old);
     }
     if (ok) log_info("删除存档: %s",filename);
@@ -2680,6 +2905,67 @@ char *backend_travel(const char *from, const char *to, double dist, const char *
     if (!saved) jb_kv_str(&j,"warning","自动存档写入失败");
     jb_str(&j,",\"state\":"); char *s=build_state_json(); jb_str(&j,s); free(s);
     jb_obj_close(&j);
+    LeaveCriticalSection(&g_state_lock);
+    return jb_detach(&j);
+}
+
+char *backend_delete_location(const char *level_str, const char *name)
+{
+    EnterCriticalSection(&g_state_lock);
+    if (!g_world_ready) { LeaveCriticalSection(&g_state_lock); return err_json("无存档"); }
+
+    int level = atoi(level_str);
+    if (level < 0 || level > 2) {
+        LeaveCriticalSection(&g_state_lock);
+        return err_json("无效的地图层级 (0=具体地点 1=小地点 2=大地点)");
+    }
+    if (!name || !name[0]) {
+        LeaveCriticalSection(&g_state_lock);
+        return err_json("请指定要删除的地点名称");
+    }
+
+    if (!map_has_point(&g_map, level, name)) {
+        /* Log existing points at this level to help debug */
+        log_warn("DELETE_LOCATION: point '%s' not found at level %d. Existing points:", name, level);
+        for (int i = 0; i < g_map.levels[level].count; i++) {
+            log_warn("  [%d] '%s'", i, g_map.levels[level].points[i].name);
+        }
+        LeaveCriticalSection(&g_state_lock);
+        return err_json("地点不存在");
+    }
+
+    if (!map_remove_point(&g_map, level, name)) {
+        LeaveCriticalSection(&g_state_lock);
+        return err_json("删除失败");
+    }
+
+    log_info("DELETE_LOCATION: level=%d name=%s", level, name);
+    ws_sync_from_globals();
+    bool saved = save_to_file("autosave");
+    event_push(&g_events, g_ws.tick, -1, -1, EVENT_SYSTEM,
+               "{\"msg\":\"deleted location\",\"level\":%d,\"name\":\"%s\"}", level, name);
+
+    JsonBuf j; jb_init(&j); jb_obj_open(&j);
+    jb_kv_bool(&j, "ok", 1);
+    if (!saved) jb_kv_str(&j, "warning", "自动存档写入失败");
+    jb_str(&j, ",\"state\":"); char *s = build_state_json(); jb_str(&j, s); free(s);
+    jb_obj_close(&j);
+    LeaveCriticalSection(&g_state_lock);
+    return jb_detach(&j);
+}
+
+char *backend_get_chat_history(void)
+{
+    EnterCriticalSection(&g_state_lock);
+    JsonBuf j; jb_init(&j); jb_arr_open(&j);
+    for (int i = 0; i < g_chat_count; i++) {
+        if (i > 0) jb_str(&j, ",");
+        jb_obj_open(&j);
+        jb_kv_str(&j, "role", g_chat_history[i].role);
+        jb_kv_str(&j, "text", g_chat_history[i].text);
+        jb_obj_close(&j);
+    }
+    jb_arr_close(&j);
     LeaveCriticalSection(&g_state_lock);
     return jb_detach(&j);
 }

@@ -1,3 +1,4 @@
+#include "log.h"
 #include "environment.h"
 #include <stdio.h>
 #include <string.h>
@@ -86,12 +87,9 @@ void env_set_weather(Environment *env, Weather w)
 void env_set_location(Environment *env,
     const char *area, const char *district, const char *spot)
 {
-    strncpy(env->location.area,     area,     MAX_AREA_LEN - 1);
-    strncpy(env->location.district, district, MAX_DISTRICT_LEN - 1);
-    strncpy(env->location.spot,     spot,     MAX_SPOT_LEN - 1);
-    env->location.area[MAX_AREA_LEN - 1]         = '\0';
-    env->location.district[MAX_DISTRICT_LEN - 1] = '\0';
-    env->location.spot[MAX_SPOT_LEN - 1]         = '\0';
+    safe_strcpy(env->location.area,     area,     MAX_AREA_LEN);
+    safe_strcpy(env->location.district, district, MAX_DISTRICT_LEN);
+    safe_strcpy(env->location.spot,     spot,     MAX_SPOT_LEN);
 }
 
 void env_set_era(Environment *env, const char *era)
@@ -192,21 +190,3 @@ const char *weekday_str(Weekday w)
     }
 }
 
-void env_print(const Environment *env)
-{
-    printf("══════════════════════════════════════\n");
-    printf("  环境信息\n");
-    printf("══════════════════════════════════════\n");
-    printf("  时代:   %s\n", env->era);
-    printf("  时间:   %d年%02d月%02d日  %s  %02d:%02d\n",
-        env->time.year, env->time.month, env->time.day,
-        weekday_str(env->time.weekday),
-        env->time.hour, env->time.minute);
-    printf("  天气:   %s\n", weather_str(env->weather));
-    printf("──────────────────────────────────────\n");
-    printf("  地点\n");
-    printf("  大地点: %s\n", env->location.area);
-    printf("  小地点: %s\n", env->location.district);
-    printf("  具体:   %s\n", env->location.spot);
-    printf("══════════════════════════════════════\n");
-}

@@ -1,5 +1,4 @@
 #include "memory.h"
-#include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
 
@@ -99,34 +98,3 @@ void mem_cleanup(MemoryStore *store, const GameTime *now)
     /* 永久记忆不清理 */
 }
 
-const char *mem_type_str(MemoryType t)
-{
-    switch (t) {
-        case MEM_SHORT_TERM: return "短期";
-        case MEM_LONG_TERM:  return "长期";
-        case MEM_PERMANENT:  return "永久";
-        default:             return "未知";
-    }
-}
-
-void mem_print(const MemoryStore *store)
-{
-    printf("═══ 短期记忆 (%d) ═══\n", store->short_count);
-    for (int i = 0; i < store->short_count; i++) {
-        const MemoryEntry *e = &store->short_term[i];
-        printf("  [%02d:%02d] %s\n", e->timestamp.hour, e->timestamp.minute, e->content);
-    }
-
-    printf("═══ 长期记忆 (%d) ═══\n", store->long_count);
-    for (int i = 0; i < store->long_count; i++) {
-        const MemoryEntry *e = &store->long_term[i];
-        printf("  [%d-%02d-%02d] %s\n",
-            e->timestamp.year, e->timestamp.month, e->timestamp.day, e->content);
-    }
-
-    printf("═══ 永久记忆 (%d) ═══\n", store->perm_count);
-    for (int i = 0; i < store->perm_count; i++) {
-        const MemoryEntry *e = &store->permanent[i];
-        printf("  ★ %s\n", e->content);
-    }
-}

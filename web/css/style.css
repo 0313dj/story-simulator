@@ -130,6 +130,10 @@ body {
 }
 .btn-icon:hover { background: var(--bg-hover); color: var(--text-primary); }
 
+.btn-sm {
+  padding: 0 10px; height: 26px; font-size: 12px;
+}
+
 /* ═══════════════════════════════════════════════════════════════
    CARD
    ═══════════════════════════════════════════════════════════════ */
@@ -221,11 +225,8 @@ body {
   grid-template-columns: 1fr 1fr 1fr;
   gap: 5px; margin-top: 2px;
 }
-.detail-btns .btn:nth-child(4),
 .detail-btns .btn:nth-child(5) { grid-column: span 1; }
 
-/* force last 2 into centered row */
-.detail-btns { grid-template-columns: 1fr 1fr 1fr; }
 .detail-btns .btn:nth-child(4) { grid-column: 1; }
 /* workaround: always show 3 cols, leave empty cell if needed */
 
@@ -323,6 +324,11 @@ body {
   font-family: var(--font); font-size: 13px;
 }
 .form-row textarea { resize: vertical; min-height: 60px; }
+.form-row select {
+  width: 100%; padding: 6px 10px; border: 1px solid var(--border);
+  border-radius: 4px; background: var(--bg-input); color: var(--text-primary);
+  font-family: var(--font); font-size: 13px;
+}
 
 /* ═══════════════════════════════════════════════════════════════
    SAVE LIST
@@ -434,4 +440,19 @@ body {
 }
 .debug-kv-val {
   color: #a6adc8;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MAP DRILL-DOWN
+   ═══════════════════════════════════════════════════════════════ */
+.map-point-drillable {
+  cursor: pointer;
+  transition: r 0.15s ease, opacity 0.15s ease;
+}
+.map-point-drillable:hover {
+  opacity: 0.8;
+  filter: drop-shadow(0 0 4px rgba(255,255,255,0.5));
+}
+.map-point-leaf {
+  cursor: default;
 }

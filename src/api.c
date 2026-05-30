@@ -33,19 +33,13 @@ static size_t write_cb(void *ptr, size_t sz, size_t nmemb, void *ctx)
 void api_init(ApiClient *api, const char *endpoint, const char *key, const char *model)
 {
     memset(api, 0, sizeof(*api));
-    strncpy(api->endpoint, endpoint, MAX_ENDPOINT_LEN - 1);
-    strncpy(api->api_key,  key,      MAX_KEY_LEN - 1);
-    strncpy(api->model,    model,    MAX_MODEL_LEN - 1);
+    safe_strcpy(api->endpoint, endpoint, MAX_ENDPOINT_LEN);
+    safe_strcpy(api->api_key,  key,      MAX_KEY_LEN);
+    safe_strcpy(api->model,    model,    MAX_MODEL_LEN);
     api->endpoint[MAX_ENDPOINT_LEN - 1] = '\0';
     api->api_key[MAX_KEY_LEN - 1]       = '\0';
     api->model[MAX_MODEL_LEN - 1]       = '\0';
     /* Token counters are already zero from memset */
-}
-
-void api_set_key(ApiClient *api, const char *key)
-{
-    strncpy(api->api_key, key, MAX_KEY_LEN - 1);
-    api->api_key[MAX_KEY_LEN - 1] = '\0';
 }
 
 const char *api_last_error(const ApiClient *api)
@@ -95,6 +89,11 @@ static int extract_content(const char *json, char *out, int out_size)
             p += 2;
         } else if (*p == '"') {
             break;
+        } else if (*p == '\0') {
+            /* Skip embedded null bytes — some APIs (e.g. 通义千问)
+               may inject \\u0000 or raw null bytes in the response. */
+            log_warn("API: null byte in content at offset %d, skipping", i);
+            p++;
         } else {
             out[i++] = *p;
             p++;
@@ -105,18 +104,26 @@ static int extract_content(const char *json, char *out, int out_size)
 }
 
 /* Escape a string for inclusion in a JSON string value.
-   Returns the number of bytes written (excluding null terminator).
-   If the buffer is too small, the output is truncated at dst_size-1
-   and the return value exceeds dst_size — callers MUST check this. */
-static int escape_json(const char *src, char *dst, int dst_size)
+   Uses explicit src_len (NOT null-termination) so embedded \\0 bytes
+   cannot cause silent truncation.  Returns the number of bytes written
+   (excluding null terminator).  If the buffer is too small, the output
+   is truncated at dst_size-1 and the return value exceeds dst_size —
+   callers MUST check this.
+
+   JSON rules (RFC 8259): MUST escape " \ and control chars U+0000–U+001F.
+   Also escapes / for maximum compatibility (some services require it).
+   UTF-8 multi-byte sequences (0x80–0xFF) pass through unchanged —
+   they are valid JSON as-is and do not need \\u escaping. */
+static int escape_json(const char *src, int src_len, char *dst, int dst_size)
 {
     int j = 0;
-    for (const char *s = src; *s; s++) {
-        unsigned char c = (unsigned char)*s;
+    for (int i = 0; i < src_len; i++) {
+        unsigned char c = (unsigned char)src[i];
 
         /* Compute how many bytes this character needs after escaping */
         int need = 1;
         if      (c == '"' || c == '\\')             need = 2;
+        else if (c == '/')                           need = 2;  /* \\/ */
         else if (c == '\n' || c == '\r' || c == '\t') need = 2;
         else if (c == '\b' || c == '\f')             need = 2;
         else if (c < 0x20)                           need = 6;  /* \\u00XX */
@@ -126,6 +133,9 @@ static int escape_json(const char *src, char *dst, int dst_size)
             if (c == '"' || c == '\\') {
                 dst[j++] = '\\';
                 dst[j++] = c;
+            } else if (c == '/') {
+                dst[j++] = '\\';
+                dst[j++] = '/';
             } else if (c == '\n') {
                 dst[j++] = '\\'; dst[j++] = 'n';
             } else if (c == '\r') {
@@ -137,14 +147,19 @@ static int escape_json(const char *src, char *dst, int dst_size)
             } else if (c == '\f') {
                 dst[j++] = '\\'; dst[j++] = 'f';
             } else if (c < 0x20) {
+                /* Control char (including \\0) → \\u00XX.
+                   snprintf is safe here — dst has room (checked above). */
                 char hex[7];
                 snprintf(hex, sizeof(hex), "\\u%04x", c);
                 for (int k = 0; hex[k]; k++) dst[j++] = hex[k];
             } else {
+                /* Printable ASCII or UTF-8 continuation byte — pass through */
                 dst[j++] = (char)c;
             }
         } else {
-            /* Buffer full — keep counting but skip writing */
+            /* Buffer full — keep counting but skip writing.
+               This ensures the return value is the TOTAL length needed,
+               which callers use to detect truncation. */
             j += need;
         }
     }
@@ -208,6 +223,21 @@ bool api_chat(ApiClient *api, const char *system_prompt,
        We use 3x + 256 margin. */
     int sys_in_len  = (int)strlen(system_prompt);
     int usr_in_len  = (int)strlen(user_prompt);
+
+    /* Detect embedded null bytes that would cause silent truncation.
+       strlen stops at the first \\0, but the underlying buffer may be
+       larger.  If the source pointer came from a buffer with a known
+       size we could check more rigorously; here we verify that the
+       null-terminated view is self-consistent. */
+    if (sys_in_len > 0 && system_prompt[sys_in_len] != '\0') {
+        log_warn("API: system_prompt has data after null terminator at offset %d",
+                 sys_in_len);
+    }
+    if (usr_in_len > 0 && user_prompt[usr_in_len] != '\0') {
+        log_warn("API: user_prompt has data after null terminator at offset %d",
+                 usr_in_len);
+    }
+
     int sys_esc_sz  = sys_in_len * 3 + 256;
     int usr_esc_sz  = usr_in_len * 3 + 256;
     if (sys_esc_sz < 4096)  sys_esc_sz = 4096;   /* reasonable floor */
@@ -227,8 +257,8 @@ bool api_chat(ApiClient *api, const char *system_prompt,
         return false;
     }
 
-    int sys_esc_len = escape_json(system_prompt, sys_esc, sys_esc_sz);
-    int usr_esc_len = escape_json(user_prompt,   usr_esc, usr_esc_sz);
+    int sys_esc_len = escape_json(system_prompt, sys_in_len, sys_esc, sys_esc_sz);
+    int usr_esc_len = escape_json(user_prompt,   usr_in_len, usr_esc, usr_esc_sz);
 
     /* Detect truncation in either escape buffer */
     if (sys_esc_len >= sys_esc_sz) {
@@ -251,8 +281,24 @@ bool api_chat(ApiClient *api, const char *system_prompt,
         return false;
     }
 
-    /* Body buffer: JSON overhead (~256) + escaped strings */
-    int body_sz = sys_esc_len + usr_esc_len + 1024;
+    /* Compute exact JSON template overhead by snprintf to NULL.
+       We measure the fixed parts (model name, boilerplate, max_tokens)
+       and add the already-allocated escaped strings. This avoids the
+       guesswork of a fixed +1024 margin. */
+    int body_overhead = snprintf(NULL, 0,
+        "{"
+        "\"model\":\"%s\","
+        "\"messages\":["
+            "{\"role\":\"system\",\"content\":\"%s\"},"
+            "{\"role\":\"user\",\"content\":\"%s\"}"
+        "],"
+        "\"temperature\":0.7,"
+        "\"max_tokens\":%d"
+        "}",
+        api->model, "", "", max_tokens);
+    /* snprintf(NULL, 0, ...) returns the number of chars that WOULD be
+       written, excluding null terminator. Add 1 for the null. */
+    int body_sz = body_overhead + 1 + sys_esc_len + usr_esc_len;
     char *body = (char*)malloc(body_sz);
     if (!body) {
         snprintf(api->last_error, sizeof(api->last_error),
@@ -275,11 +321,12 @@ bool api_chat(ApiClient *api, const char *system_prompt,
         "}",
         api->model, sys_esc, usr_esc, max_tokens);
 
-    /* Body truncation detection */
-    if (body_len >= body_sz) {
+    /* Body truncation detection (should never happen with exact sizing,
+       but kept as a defensive check) */
+    if (body_len < 0 || body_len >= body_sz) {
         snprintf(api->last_error, sizeof(api->last_error),
             "request body too large (%d bytes, limit=%d)", body_len, body_sz);
-        log_error("API: body truncated (%d/%d)", body_len, body_sz);
+        log_error("API: body build failed (len=%d, sz=%d)", body_len, body_sz);
         free(body); free(sys_esc); free(usr_esc);
         curl_easy_cleanup(curl);
         return false;
@@ -337,7 +384,60 @@ bool api_chat(ApiClient *api, const char *system_prompt,
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     log_info("API: HTTP %ld, response=%d bytes", http_code, ctx.size);
     if (http_code != 200) {
-        /* 如果是 HTML 错误页，只取标题 */
+        /* ── Detailed error logging ── */
+
+        /* 1. Log full response body (first 500 chars) for diagnosis */
+        log_error("API: HTTP %ld — response body (%.500s)",
+                  http_code, out[0] ? out : "(empty)");
+
+        /* 2. Try to extract "error"."message" from JSON response */
+        {
+            const char *err_key = strstr(out, "\"error\"");
+            if (err_key) {
+                const char *msg_key = strstr(err_key, "\"message\"");
+                if (msg_key) {
+                    msg_key = strchr(msg_key, ':');
+                    if (msg_key) {
+                        msg_key++; /* skip ':' */
+                        while (*msg_key == ' ' || *msg_key == '"') msg_key++;
+                        char err_msg[256] = {0};
+                        int ei = 0;
+                        while (*msg_key && *msg_key != '"' && ei < 250) {
+                            if (*msg_key == '\\' && msg_key[1] == '"')
+                                { err_msg[ei++] = '"'; msg_key += 2; continue; }
+                            err_msg[ei++] = *msg_key++;
+                        }
+                        err_msg[ei] = '\0';
+                        if (err_msg[0])
+                            log_error("API: error.message = \"%s\"", err_msg);
+                    }
+                }
+            }
+        }
+
+        /* 3. Log request body (first 300 chars, API key masked) */
+        if (body) {
+            /* Mask the API key if it appears in the body (it shouldn't in
+               a POST body, but be defensive) */
+            char *body_safe = strstr(body, api->api_key);
+            if (body_safe && api->api_key[0]) {
+                /* Replace key with *** in a copy before logging */
+                int body_len = (int)strlen(body);
+                char *body_copy = (char*)malloc(body_len + 1);
+                if (body_copy) {
+                    memcpy(body_copy, body, body_len + 1);
+                    char *pos = strstr(body_copy, api->api_key);
+                    if (pos) memset(pos, '*', strlen(api->api_key));
+                    log_error("API: request body (%.300s)", body_copy);
+                    free(body_copy);
+                }
+            } else {
+                log_error("API: request body (%.300s)", body);
+            }
+        }
+
+        /* 4. Build user-facing error message */
+        /* If it's an HTML error page, extract just the title */
         const char *detail = out;
         char short_msg[256] = {0};
         if (strstr(out, "<html>") || strstr(out, "<HTML>")) {
@@ -347,18 +447,18 @@ bool api_chat(ApiClient *api, const char *system_prompt,
                 const char *end = strstr(title, "</title>");
                 int len = end ? (int)(end - title) : 60;
                 if (len > 200) len = 200;
-                strncpy(short_msg, title, len);
+                safe_strcpy(short_msg, title, len + 1);
                 short_msg[len] = '\0';
                 detail = short_msg;
             } else {
                 detail = "(服务器返回 HTML 错误页)";
             }
         }
-        /* 截断过长信息 */
+        /* Truncate long messages */
         char truncated[256];
         int dlen = (int)strlen(detail);
         if (dlen > 200) {
-            strncpy(truncated, detail, 200);
+            safe_strcpy(truncated, detail, 201);
             truncated[200] = '\0';
             detail = truncated;
         }
@@ -396,35 +496,6 @@ bool api_chat(ApiClient *api, const char *system_prompt,
     return true;
 }
 
-/* 检查 API 端点是否可达 */
-bool api_check_reachable(ApiClient *api)
-{
-    CURL *curl = curl_easy_init();
-    if (!curl) return false;
-
-    curl_easy_setopt(curl, CURLOPT_URL, api->endpoint);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
-    curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-
-    /* CA 证书路径 */
-    {
-        char exe_path[512], *slash;
-        GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
-        slash = strrchr(exe_path, '\\');
-        if (slash) *slash = '\0';
-        char ca_path[512];
-        snprintf(ca_path, sizeof(ca_path), "%s\\cacert.pem", exe_path);
-        if (GetFileAttributesA(ca_path) != INVALID_FILE_ATTRIBUTES) {
-            curl_easy_setopt(curl, CURLOPT_CAINFO, ca_path);
-        }
-    }
-
-    CURLcode res = curl_easy_perform(curl);
-    curl_easy_cleanup(curl);
-    return (res == CURLE_OK);
-}
-
 /* 解析单行标记 — 取 tag 后到行尾的内容 */
 static bool parse_tag(const char *text, const char *tag, char *out, int out_size)
 {
@@ -444,8 +515,12 @@ static bool parse_tag(const char *text, const char *tag, char *out, int out_size
     int len = end ? (int)(end - p) : (int)strlen(p);
     /* Trim trailing \r */
     while (len > 0 && (p[len - 1] == '\r' || p[len - 1] == ' ')) len--;
-    if (len <= 0) { out[0] = '\0'; return false; }
-    if (len > out_size - 1) len = out_size - 1;
+    if (len < 0 || len > out_size - 1) {
+        log_error("parse_tag: invalid length %d (out_size=%d)", len, out_size);
+        out[0] = '\0';
+        return false;
+    }
+    if (len == 0) { out[0] = '\0'; return false; }
     memcpy(out, p, len);
     out[len] = '\0';
     return true;
@@ -469,40 +544,51 @@ static const char *stristr(const char *haystack, const char *needle)
 }
 
 /* 解析多行块 — 从 tag 后取到下一个标签（标签以 \n 开头即位于行首）
-   Case-insensitive: tries exact match first, then falls back to case-insensitive. */
+   Safe version: validates all pointer arithmetic against null terminator
+   and never passes NULL to strstr/stristr. */
 static bool parse_block(const char *text, const char *tag,
                         const char **next_tags, int ntags,
                         char *out, int out_size)
 {
-    const char *start = strstr(text, tag);
-    if (!start) start = stristr(text, tag);  /* fallback: case-insensitive */
-    if (!start) { out[0] = '\0'; return false; }
-    const char *p = start + strlen(tag);
-    while (*p == ' ' || *p == '\n' || *p == '\r') p++;
+    out[0] = '\0';
+    if (!text || !tag || !out) return false;
 
-    /* Find the earliest next tag in the remaining text.
-       Tags start with \n so they naturally match at line boundaries. */
+    const char *start = strstr(text, tag);
+    if (!start) start = stristr(text, tag);
+    if (!start) return false;
+
+    const char *p = start + strlen(tag);
+    /* Skip whitespace, but never go past the null terminator */
+    while (*p == ' ' || *p == '\n' || *p == '\r') {
+        if (*p == '\0') return false;
+        p++;
+    }
+    if (*p == '\0') return false;
+
+    /* Find the earliest next tag that appears at a line start.
+       Search from p (the content) forward; stop at the first line-start match. */
     const char *end = text + strlen(text);
     for (int i = 0; i < ntags; i++) {
-        const char *scan = start + 1;
-        while ((scan = strstr(scan, next_tags[i])) != NULL ||
-               (scan = stristr(scan, next_tags[i])) != NULL) {
-            if (scan < end) {
-                if (scan == text || *(scan - 1) == '\n') {
-                    end = scan;
-                    goto found_end;
-                }
+        const char *next = strstr(p, next_tags[i]);
+        if (next && next < end) {
+            /* Verify the tag is at line start */
+            if (next == p || *(next - 1) == '\n') {
+                end = next;
+                break;
             }
-            scan++;
         }
     }
-found_end:
-    /* Trim trailing whitespace */
-    while (end > p && (*(end - 1) == '\n' || *(end - 1) == '\r' || *(end - 1) == ' '))
-        end--;
+
+    if (end <= p) return false;
     int len = (int)(end - p);
-    if (len <= 0) { out[0] = '\0'; return false; }
-    if (len > out_size - 1) len = out_size - 1;
+    /* Trim trailing whitespace */
+    while (len > 0 && (p[len - 1] == '\n' || p[len - 1] == '\r' || p[len - 1] == ' '))
+        len--;
+    if (len <= 0) return false;
+    if (len >= out_size) len = out_size - 1;
+    /* Walk back to UTF-8 character boundary to avoid splitting multi-byte chars */
+    while (len > 0 && ((unsigned char)p[len] & 0xC0) == 0x80)
+        len--;
     memcpy(out, p, len);
     out[len] = '\0';
     return true;
@@ -540,7 +626,7 @@ bool api_select_vars(ApiClient *api, const char *user_input,
     if (!api_chat(api, sys, prompt, raw, sizeof(raw), 512)) {
         return false;
     }
-    strncpy(result->raw, raw, sizeof(result->raw) - 1);
+    safe_strcpy(result->raw, raw, sizeof(result->raw));
 
     char *vars_line  = strstr(raw, "VARS:");
     char *chars_line = strstr(raw, "CHARS:");
@@ -609,6 +695,12 @@ bool api_generate(ApiClient *api, const char *user_input,
         "TIME: <经过的分钟数，如 30 表示过了30分钟，不推进写 0>\n\n"
         "WEATHER: <天气代码: 0晴 1多云 2阴天 3小雨 4大雨 5雷暴 6雪 7暴风雪 8雾 9大风 10沙尘暴，不变写 -1>\n\n"
         "LOCATION: <新地点，格式: 大地点/小地点/具体地点，不变留空>\n\n"
+        "【时代约束】\n"
+        "- 所有叙事、对话、事件必须严格符合当前时代背景\n"
+        "- NPC的行为、语言、持有的物品、使用的工具必须与时代一致\n\n"
+        "【时间与NPC行为】\n"
+        "- 必须根据当前游戏时间决定NPC的行为和出场\n"
+        "- NPC_SPAWN和NPC_CREATE必须考虑当前时间是否合理\n\n"
         "MEM_SUMMARY: <本次事件≤10字总结，无值得记录的内容则留空>\n\n"
         "MEM_SHORT: <NPC对话内容摘要，存入短期记忆(8小时)。不添加留空>\n\n"
         "MEM_LONG: <事件记录，存入长期记忆(30天)。不添加留空>\n\n"
@@ -616,17 +708,19 @@ bool api_generate(ApiClient *api, const char *user_input,
         "MEM_CHARS: <以上记忆关联的人物名，逗号分隔>\n\n"
         "NPC_TEMP: <临时NPC，格式: 名称|简短描述，每行一个。无则留空>\n\n"
         "NPC_SPAWN: <有角色卡的NPC出场判定，每行一个。格式: NPC名称|MUST或MAYBE或NEVER|出现地点>\n"
-        "  MUST=必定出场  MAYBE=可能出场(20%概率)  NEVER=不出场\n"
+        "  MUST=必定出场  MAYBE=可能出场(20%%概率)  NEVER=不出场\n"
         "  判断依据: NPC身份、当前状态、时间地点是否合理\n\n"
         "NPC_CREATE: <新建NPC角色卡，每行 key=value。不需要则留空>\n"
-        "  必填: name=中文名, age=年龄, personality=身份性格描述, clothing=衣着描述\n"
+        "  必填: name=常见中文名（使用日常生活中常见的名字，避免生僻字和文艺名）, age=年龄, gender=性别(男/女/其他), personality=身份性格描述(须明确社会身份), clothing=衣着描述(须符合身份)\n"
+        "  必填: home=住所地点名(每个NPC必须有家，用世界中的地点名)\n"
         "  选填: status=状态(NORMAL/HUNGRY/TIRED/SICK/INJURED/EXCITED/ANGRY/SAD/HAPPY)\n"
         "        money=金钱数量, attr.appearance=颜值(0-100)\n"
         "        attr.constitution=体质(0-100), attr.intelligence=智力(0-100)\n"
         "        skill.技能名=等级, item.物品名=数量\n"
         "        relation.关联人名=关系类型+/-好感度, player_affinity=好感度(-100~100)\n\n"
         "你需要自主裁决：剧情走向、NPC行为、时间流逝、天气变化、地点转移、\n"
-        "角色属性变化、好感度变化、物品得失、技能成长、以及哪些事值得记住。",
+        "角色属性变化、好感度变化、物品得失、技能成长、以及哪些事值得记住。\n"
+        "NPC的说话方式、行为选择、事件反应必须严格符合其社会身份和性格。",
         narrative_get_system_prompt());
 
     const char *sys = sys_prompt;
@@ -641,7 +735,9 @@ bool api_generate(ApiClient *api, const char *user_input,
     if (!api_chat(api, sys, prompt, raw, sizeof(raw), 4096)) {
         return false;
     }
-    strncpy(result->raw, raw, sizeof(result->raw) - 1);
+    log_info("API: generate: api_chat OK, raw length=%d, preview=%.200s",
+             (int)strlen(raw), raw);
+    safe_strcpy(result->raw, raw, sizeof(result->raw));
 
     const char *tags[] = {
         "\nTEXT:", "\nCHANGES:", "\nTIME:", "\nWEATHER:",
@@ -658,18 +754,13 @@ bool api_generate(ApiClient *api, const char *user_input,
     char buf[64];
     if (parse_tag(raw, "TIME:", buf, sizeof(buf))) {
         int t = 0;
-        /* Accept pure number, or number followed by non-numeric suffix like "30分钟" */
-        /* Bug #5 fix: keep -1 on parse failure to match "unchanged" semantic */
-        if (sscanf(buf, "%d", &t) == 1 && t >= 0 && t <= 10080)  /* max 1 week */
+        if (sscanf(buf, "%d", &t) == 1 && t >= 0 && t <= 10080)
             result->time_advance = t;
-        /* else: keep -1 (no time advance) — distinct from explicit TIME: 0 */
     }
     if (parse_tag(raw, "WEATHER:", buf, sizeof(buf))) {
-        /* Only accept if the value looks like a pure integer 0-10 or -1 */
         char *endp = NULL;
         long w = strtol(buf, &endp, 10);
         if (endp && endp != buf) {
-            /* Check remaining chars are only whitespace */
             while (*endp == ' ' || *endp == '\r' || *endp == '\n') endp++;
             if (*endp == '\0' && w >= -1 && w <= 10)
                 result->weather = (int)w;
@@ -677,11 +768,9 @@ bool api_generate(ApiClient *api, const char *user_input,
     }
 
     parse_tag(raw, "LOCATION:", result->location, sizeof(result->location));
-    /* Validate location contains at least one / separator */
-    if (result->location[0] && !strchr(result->location, '/')) {
-        /* Not a valid location format — keep old location */
+    if (result->location[0] && !strchr(result->location, '/'))
         result->location[0] = '\0';
-    }
+
     parse_tag(raw, "MEM_SUMMARY:", result->mem_summary, sizeof(result->mem_summary));
     parse_tag(raw, "MEM_SHORT:", result->mem_short, sizeof(result->mem_short));
     parse_tag(raw, "MEM_LONG:", result->mem_long, sizeof(result->mem_long));
@@ -716,48 +805,6 @@ bool api_generate(ApiClient *api, const char *user_input,
     return true;
 }
 
-/* ── Phase 4: Narrative-only generation ── */
-
-bool api_generate_narrative(ApiClient *api, const char *system_prompt,
-                             const char *user_input, const char *context,
-                             char *out_text, int out_text_size)
-{
-    if (!api || !out_text || out_text_size <= 0) return false;
-
-    memset(out_text, 0, out_text_size);
-
-    const char *sys = system_prompt ? system_prompt : narrative_get_system_prompt();
-
-    char prompt[24576];
-    snprintf(prompt, sizeof(prompt),
-        "玩家行动：%s\n\n"
-        "游戏状态与事件：\n%s\n\n"
-        "请生成叙事。",
-        user_input ? user_input : "",
-        context ? context : "");
-
-    char raw[8192];
-    memset(raw, 0, sizeof(raw));
-    if (!api_chat(api, sys, prompt, raw, sizeof(raw), 2048)) {
-        return false;
-    }
-
-    /* Clean output */
-    char *p = raw;
-    if (strncmp(p, "TEXT:", 5) == 0) {
-        p += 5;
-        while (*p == ' ' || *p == '\n' || *p == '\r') p++;
-    }
-    char *end = p + strlen(p) - 1;
-    while (end > p && (*end == '\n' || *end == '\r' || *end == ' '))
-        *end-- = '\0';
-
-    strncpy(out_text, p, out_text_size - 1);
-    out_text[out_text_size - 1] = '\0';
-
-    return out_text[0] != '\0';
-}
-
 /* ── 旅行时间查询 ── */
 bool api_query_travel(ApiClient *api, double distance_km,
                       const char *method, int *out_minutes)
@@ -786,8 +833,9 @@ bool api_query_travel(ApiClient *api, double distance_km,
 
 /* ── 世界创建 ── */
 bool api_create_world(ApiClient *api,
-    const char *name, const char *age, const char *clothing,
-    const char *money, const char *appearance, const char *constitution,
+    const char *name, const char *age, const char *gender,
+    const char *clothing, const char *money,
+    const char *appearance, const char *constitution,
     const char *intelligence, const char *skills, const char *items,
     const char *story, WorldCreateResult *result)
 {
@@ -796,28 +844,38 @@ bool api_create_world(ApiClient *api,
 
     const char *sys =
         "你是一个游戏世界创建者。根据用户提供的角色数据和故事，创建完整的世界。\n\n"
-        "【重要】所有地名、NPC名字必须使用中文风格，严禁使用英文名。\n\n"
+        "【重要】所有地名、NPC名字必须使用中文风格，严禁使用英文名。\n"
+        "NPC名字使用日常生活中常见的名字即可，避免生僻字和过于文艺的名字。\n\n"
         "用户的角色卡有所有字段但无性格(personality)，玩家角色卡不应有性格字段。\n\n"
         "严格按以下格式返回：\n\n"
         "PLAYER:\n"
         "<用户角色完整数据，每行 key=value。保留用户填写的字段>\n"
-        "必须包含: name, age, clothing, money, status=NORMAL\n"
+        "必须包含: name, age, gender, clothing, money, status=NORMAL\n"
         "注意: 玩家卡不要写 personality 字段\n"
         "         attr.appearance, attr.constitution, attr.intelligence\n"
         "可选: skill.技能名=等级, item.物品名=数量\n\n"
         "LOCATIONS:\n"
-        "<至少4个中文地名，每行: 名称|x|y，坐标0-999，间距≥150>\n\n"
+        "<至少15个中文地名，每行: 名称|x|y，坐标0-999，间距≥100，尽量均匀分布覆盖整张地图>\n\n"
         "START:\n"
         "<起始地点 大地点/小地点/具体地点，全部中文>\n\n"
+        "TIME:\n"
+        "<初始时间，格式: 年|月|日|时|分|星期，如 1|3|15|8|0|星期一>\n"
+        "  根据角色故事选择合适的起始年份、季节和时段>\n\n"
+        "ERA:\n"
+        "<时代背景，根据角色故事确定，所有叙事和事件必须符合该时代>\n\n"
         "NPCS:\n"
-        "<NPC角色卡，每个用 --- 分隔。每个NPC必须用中文名>\n"
-        "每个NPC含: name=中文名, age=年龄, personality=身份性格描述,\n"
-        " clothing=衣着描述, attr.appearance=颜值, attr.constitution=体质,\n"
+        "<NPC角色卡，每个用 --- 分隔。每个NPC必须用常见中文名>\n"
+        "每个NPC含: name=常见中文名（使用日常生活中常见的名字，避免生僻字和文艺名）, age=年龄, gender=性别(男/女/其他),\n"
+        " personality=身份性格描述(必须明确写出此人的社会身份，如'铁匠'、'酒馆老板'、'巡逻队长'等),\n"
+        " clothing=衣着描述(必须符合其身份),\n"
+        " home=住所地点名(每个NPC必须有家，用地图中已有的地点名),\n"
+        " attr.appearance=颜值, attr.constitution=体质,\n"
         " attr.intelligence=智力, player_affinity=好感度(-100~100)\n"
         " 必须包含: relation.玩家名=关系类型+/-好感度\n"
         " 可选: skill.*, item.*\n"
         " 含玩家在内角色卡总数不少于5个，不足则补充合理的中文名NPC>\n"
-        " NPC名字必须多样，不能重复使用同一姓氏>\n\n"
+        " NPC名字使用常见人名即可，避免生僻字和文艺名，同时保持多样，不能重复使用同一姓氏>\n"
+        " NPC的对话风格、事件生成必须严格符合其身份和性格>\n\n"
         "关系类型必须从以下16种中选择:\n"
         "PARENT CHILD SIBLING SPOUSE\n"
         "LOVER EX KIN FRIEND\n"
@@ -828,8 +886,8 @@ bool api_create_world(ApiClient *api,
     int p = 0;
     p += snprintf(prompt + p, sizeof(prompt) - p,
         "【角色卡（无性格，由你根据故事补充）】\n"
-        "姓名: %s\n年龄: %s\n衣着: %s\n金钱: %s\n",
-        name, age, clothing, money);
+        "姓名: %s\n年龄: %s\n性别: %s\n衣着: %s\n金钱: %s\n",
+        name, age, gender ? gender : "未设定", clothing, money);
     p += snprintf(prompt + p, sizeof(prompt) - p,
         "颜值: %s  体质: %s  智力: %s\n",
         appearance, constitution, intelligence);
@@ -839,7 +897,7 @@ bool api_create_world(ApiClient *api,
         p += snprintf(prompt + p, sizeof(prompt) - p, "持有物: %s\n", items);
     p += snprintf(prompt + p, sizeof(prompt) - p,
         "\n【角色故事】\n%s\n\n"
-        "请创建世界。至少4个地点、至少5个角色卡(含玩家)。",
+        "请创建世界。至少15个地点、至少5个角色卡(含玩家)。",
         story);
 
     /* Bug #6 fix: detect truncation of prompt buffer */
@@ -853,12 +911,14 @@ bool api_create_world(ApiClient *api,
     if (!api_chat(api, sys, prompt, raw, sizeof(raw), 4096)) {
         return false;
     }
-    strncpy(result->raw, raw, sizeof(result->raw) - 1);
+    safe_strcpy(result->raw, raw, sizeof(result->raw));
 
-    /* 解析三个区块 */
+    /* 解析区块 */
     char *player_start = strstr(raw, "PLAYER:");
     char *loc_start    = strstr(raw, "LOCATIONS:");
     char *start_start  = strstr(raw, "START:");
+    char *time_start   = strstr(raw, "TIME:");
+    char *era_start    = strstr(raw, "ERA:");
     char *npc_start    = strstr(raw, "NPCS:");
 
     /* PLAYER */
@@ -869,6 +929,8 @@ bool api_create_world(ApiClient *api,
         if (!end) end = raw + strlen(raw);
         int len = (int)(end - player_start);
         if (len > (int)sizeof(result->player_card) - 1) len = sizeof(result->player_card) - 1;
+        while (len > 0 && ((unsigned char)player_start[len] & 0xC0) == 0x80)
+            len--;
         strncpy(result->player_card, player_start, len);
         result->player_card[len] = '\0';
         /* 去除尾部空白 */
@@ -884,6 +946,8 @@ bool api_create_world(ApiClient *api,
         if (!end) end = raw + strlen(raw);
         int len = (int)(end - loc_start);
         if (len > (int)sizeof(result->locations) - 1) len = sizeof(result->locations) - 1;
+        while (len > 0 && ((unsigned char)loc_start[len] & 0xC0) == 0x80)
+            len--;
         strncpy(result->locations, loc_start, len);
         result->locations[len] = '\0';
         char *e = result->locations + len - 1;
@@ -894,13 +958,46 @@ bool api_create_world(ApiClient *api,
     if (start_start) {
         start_start += 6;
         while (*start_start == ' ' || *start_start == '\n' || *start_start == '\r') start_start++;
-        char *end = npc_start ? npc_start : (raw + strlen(raw));
+        char *end = time_start ? time_start : (npc_start ? npc_start : (raw + strlen(raw)));
         int len = (int)(end - start_start);
         if (len > (int)sizeof(result->start_location) - 1) len = sizeof(result->start_location) - 1;
+        while (len > 0 && ((unsigned char)start_start[len] & 0xC0) == 0x80)
+            len--;
         strncpy(result->start_location, start_start, len);
         result->start_location[len] = '\0';
         char *e = result->start_location + len - 1;
         while (e > result->start_location && (*e == '\n' || *e == '\r' || *e == ' ')) *e-- = '\0';
+    }
+
+    /* TIME */
+    if (time_start) {
+        time_start += 5;
+        while (*time_start == ' ' || *time_start == '\n' || *time_start == '\r') time_start++;
+        char *end = era_start ? era_start : (npc_start ? npc_start : (raw + strlen(raw)));
+        int len = (int)(end - time_start);
+        if (len > (int)sizeof(result->start_time) - 1) len = sizeof(result->start_time) - 1;
+        while (len > 0 && ((unsigned char)time_start[len] & 0xC0) == 0x80)
+            len--;
+        strncpy(result->start_time, time_start, len);
+        result->start_time[len] = '\0';
+        char *e = result->start_time + len - 1;
+        while (e > result->start_time && (*e == '\n' || *e == '\r' || *e == ' ')) *e-- = '\0';
+    }
+
+    /* ERA */
+    if (era_start) {
+        era_start += 4;
+        while (*era_start == ' ' || *era_start == '\n' || *era_start == '\r') era_start++;
+        char *end = npc_start ? npc_start : (raw + strlen(raw));
+        int len = (int)(end - era_start);
+        if (len > (int)sizeof(result->era) - 1) len = sizeof(result->era) - 1;
+        /* Walk back to UTF-8 character boundary */
+        while (len > 0 && ((unsigned char)era_start[len] & 0xC0) == 0x80)
+            len--;
+        strncpy(result->era, era_start, len);
+        result->era[len] = '\0';
+        char *e = result->era + len - 1;
+        while (e > result->era && (*e == '\n' || *e == '\r' || *e == ' ')) *e-- = '\0';
     }
 
     /* NPCS */
@@ -909,6 +1006,8 @@ bool api_create_world(ApiClient *api,
         while (*npc_start == '\n' || *npc_start == '\r') npc_start++;
         int len = (int)strlen(npc_start);
         if (len > (int)sizeof(result->npc_cards) - 1) len = sizeof(result->npc_cards) - 1;
+        while (len > 0 && ((unsigned char)npc_start[len] & 0xC0) == 0x80)
+            len--;
         strncpy(result->npc_cards, npc_start, len);
         result->npc_cards[len] = '\0';
         char *e = result->npc_cards + len - 1;
@@ -921,6 +1020,8 @@ bool api_create_world(ApiClient *api,
     SAFE_TERM(result->locations);
     SAFE_TERM(result->npc_cards);
     SAFE_TERM(result->start_location);
+    SAFE_TERM(result->start_time);
+    SAFE_TERM(result->era);
     SAFE_TERM(result->raw);
     #undef SAFE_TERM
 

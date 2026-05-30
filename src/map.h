@@ -5,7 +5,7 @@
 
 #define MAX_MAP_POINTS  32
 #define MAX_MAP_LEVELS   3
-#define MAP_NAME_LEN    32
+#define MAP_NAME_LEN    64
 
 /* 单个地图点 */
 typedef struct {
@@ -28,34 +28,8 @@ typedef struct {
     int      zoom;            /* 当前缩放级 0=最近(L1) 1=中(L2) 2=最远(L3) */
 } GameMap;
 
-/* 旅行请求 */
-typedef struct {
-    char from[MAP_NAME_LEN];  /* 出发地名 */
-    char to[MAP_NAME_LEN];    /* 目的地名 */
-    double distance_km;       /* 直线距离(公里) */
-    char method[32];          /* 交通方式 */
-} TravelRequest;
-
 /* 初始化默认地图 */
 void map_init(GameMap *map);
-
-/* 计算两点间的欧几里得距离（坐标单位→公里，比例尺可调） */
-double map_distance(const MapPoint *a, const MapPoint *b, double scale);
-
-/* 当前缩放级下选中点的距离 */
-double map_selected_distance(const GameMap *map, int from_idx, int to_idx);
-
-/* 切换缩放级别 */
-void map_zoom_to(GameMap *map, int level);
-
-/* 在当前级选择一个点 */
-void map_select(GameMap *map, int index);
-
-/* 获取当前级名称 */
-const char *map_current_level_name(const GameMap *map);
-
-/* 获取当前级所有点 */
-const MapLevel *map_current_level(const GameMap *map);
 
 /* 根据三级名字定位并设置地图状态 */
 bool map_locate(GameMap *map, const char *area, const char *district, const char *spot);
@@ -73,5 +47,11 @@ int map_export_json(const GameMap *map, char *out, int out_size);
 
 /* 从JSON数组导入地图点（会先清空已有地图数据） */
 void map_import_json(GameMap *map, const char *json);
+
+/* 从指定级别中删除一个地图点。返回true表示成功 */
+bool map_remove_point(GameMap *map, int level, const char *name);
+
+/* 检查指定级别是否存在该名称的地图点 */
+bool map_has_point(const GameMap *map, int level, const char *name);
 
 #endif

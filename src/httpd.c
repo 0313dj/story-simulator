@@ -221,6 +221,8 @@ static void handle_api(SOCKET client, const char *headers, const char *body, int
 
     if (strcmp(cmd, "get_state") == 0) {
         result = backend_get_state();
+    } else if (strcmp(cmd, "get_chat_history") == 0) {
+        result = backend_get_chat_history();
     } else if (strcmp(cmd, "send_message") == 0) {
         json_get_str(json, "\"text\"", text, sizeof(text));
         result = backend_send_message(text);
@@ -256,10 +258,11 @@ static void handle_api(SOCKET client, const char *headers, const char *body, int
         json_get_str(json, "\"name\"", nm, sizeof(nm));
         result = backend_activate_profile(nm);
     } else if (strcmp(cmd, "create_world") == 0) {
-        char nm[64]={0}, ag[8]={0}, cl[128]={0}, mn[16]={0};
+        char nm[64]={0}, ag[8]={0}, gd[8]={0}, cl[128]={0}, mn[16]={0};
         char ap[8]={0}, co[8]={0}, in[8]={0}, sk[512]={0}, it[512]={0}, st[2048]={0};
         json_get_str(json, "\"name\"", nm, sizeof(nm));
         json_get_str(json, "\"age\"", ag, sizeof(ag));
+        json_get_str(json, "\"gender\"", gd, sizeof(gd));
         json_get_str(json, "\"clothing\"", cl, sizeof(cl));
         json_get_str(json, "\"money\"", mn, sizeof(mn));
         json_get_str(json, "\"appearance\"", ap, sizeof(ap));
@@ -268,7 +271,13 @@ static void handle_api(SOCKET client, const char *headers, const char *body, int
         json_get_str(json, "\"skills\"", sk, sizeof(sk));
         json_get_str(json, "\"items\"", it, sizeof(it));
         json_get_str(json, "\"story\"", st, sizeof(st));
-        result = backend_create_world(nm, ag, cl, mn, ap, co, in, sk, it, st);
+        result = backend_create_world(nm, ag, gd, cl, mn, ap, co, in, sk, it, st);
+    } else if (strcmp(cmd, "delete_location") == 0) {
+        char lvl[8] = {0}, lname[128] = {0};
+        json_get_str(json, "\"level\"", lvl, sizeof(lvl));
+        json_get_str(json, "\"name\"", lname, sizeof(lname));
+        log_info("HTTP API: delete_location level=%s name=%s", lvl, lname);
+        result = backend_delete_location(lvl, lname);
     } else if (strcmp(cmd, "travel") == 0) {
         char fr[64]={0}, to[64]={0}, meth[64]={0};
         double dist = 0;

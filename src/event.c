@@ -48,43 +48,6 @@ int event_push(EventLog *log, long long tick, int source_id, int target_id,
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   Query helpers
-   ═══════════════════════════════════════════════════════════════ */
-
-int event_query_by_type(const EventLog *log, EventType type,
-                        int *out_ids, int out_size)
-{
-    int found = 0;
-    for (int i = 0; i < log->count && found < out_size; i++) {
-        if (log->events[i].type == type)
-            out_ids[found++] = i;
-    }
-    return found;
-}
-
-int event_query_by_source(const EventLog *log, int source_id,
-                          int *out_ids, int out_size)
-{
-    int found = 0;
-    for (int i = 0; i < log->count && found < out_size; i++) {
-        if (log->events[i].source_id == source_id)
-            out_ids[found++] = i;
-    }
-    return found;
-}
-
-int event_query_by_tick_range(const EventLog *log, long long tick_from,
-                              long long tick_to, int *out_ids, int out_size)
-{
-    int found = 0;
-    for (int i = 0; i < log->count && found < out_size; i++) {
-        if (log->events[i].tick >= tick_from && log->events[i].tick <= tick_to)
-            out_ids[found++] = i;
-    }
-    return found;
-}
-
-/* ═══════════════════════════════════════════════════════════════
    JSON export
    ═══════════════════════════════════════════════════════════════ */
 
@@ -119,7 +82,7 @@ static void json_escape(const char *src, char *dst, int dst_size)
     dst[j] = '\0';
 }
 
-char *event_export_one_json(const Event *e)
+static char *event_export_one_json(const Event *e)
 {
     char payload_esc[MAX_EVENT_PAYLOAD * 2];
     json_escape(e->payload, payload_esc, sizeof(payload_esc));
@@ -191,8 +154,3 @@ const char *event_type_str(EventType t)
     }
 }
 
-void event_clear(EventLog *log)
-{
-    log->count = 0;
-    /* next_id keeps incrementing — event IDs are never reused */
-}

@@ -74,10 +74,6 @@ int npc_present_count(const NpcManager *mgr);
 /* 格式化在场NPC列表为文本（发给AI用） */
 int npc_export_present(const NpcManager *mgr, char *out, int out_size);
 
-/* 格式化全部有角色卡NPC名册（发给AI判断生成用） */
-int npc_export_roster(const CharacterCard *npcs, int npc_count,
-    const Environment *env, char *out, int out_size);
-
 /* 解析AI返回的NPC_SPAWN行 */
 bool npc_parse_spawn_line(const char *line, NpcSpawn *sp);
 

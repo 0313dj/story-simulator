@@ -1,3 +1,4 @@
+#include "log.h"
 #include "faction_sim.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,7 +42,7 @@ static void set_int_var(WorldState *ws, const char *name, int val)
     WorldVariable *v = &ws->variables[ws->variable_count++];
     memset(v, 0, sizeof(*v));
     v->id = ws->variable_count - 1;
-    strncpy(v->name, name, sizeof(v->name) - 1);
+    safe_strcpy(v->name, name, sizeof(v->name));
     v->type = VAR_INT;
     v->int_val = val;
 }
@@ -55,7 +56,7 @@ static int collect_faction_names(const WorldState *ws,
     for (int i = 0; i < ws->entity_count && count < max_count; i++) {
         if (ws->entities[i].entity_type == ENTITY_FACTION ||
             ws->entities[i].entity_type == ENTITY_ORGANIZATION) {
-            strncpy(names[count], ws->entities[i].name, 63);
+            safe_strcpy(names[count], ws->entities[i].name, 64);
             names[count][63] = '\0';
             count++;
         }
@@ -63,9 +64,9 @@ static int collect_faction_names(const WorldState *ws,
 
     /* If no faction entities found, use built-in generic factions */
     if (count == 0) {
-        strncpy(names[0], "王国", 63);
-        strncpy(names[1], "商会", 63);
-        strncpy(names[2], "冒险者公会", 63);
+        safe_strcpy(names[0], "王国", 64);
+        safe_strcpy(names[1], "商会", 64);
+        safe_strcpy(names[2], "冒险者公会", 64);
         count = 3;
     }
 

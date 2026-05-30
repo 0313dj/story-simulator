@@ -126,27 +126,7 @@ bool ws_set_variable(WorldState *ws, const char *name, VariableType type,
 
 /* ── Location access ── */
 
-/* Find a location node by id, returns NULL if not found */
-LocationNode* ws_find_location(WorldState *ws, int id);
-
 /* Find a location node by name, returns NULL if not found */
 LocationNode* ws_find_location_by_name(WorldState *ws, const char *name);
-
-/* Add a location node, returns its id (-1 on failure) */
-int ws_add_location(WorldState *ws, int parent_id, const char *name,
-                    int x, int y, const char *tags);
-
-/* ── Validation ── */
-
-/* Check if the world is in a valid, ready state */
-bool ws_world_ready(const WorldState *ws);
-
-/* ── Export ── */
-
-/* Export world variables as a readable text catalog (for AI context) */
-int ws_export_variable_catalog(const WorldState *ws, char *out, int out_size);
-
-/* Export world variables with values (for AI context) */
-int ws_export_variable_values(const WorldState *ws, char *out, int out_size);
 
 #endif

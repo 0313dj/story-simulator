@@ -60,10 +60,4 @@ bool planner_generate(ApiClient *api, const char *user_input,
                       const IntentResult *intent,
                       const char *game_state, Plan *plan);
 
-/* Generate a plan without an explicit intent (UNKNOWN intent).
-   Uses a broader system prompt that asks the AI to determine both
-   what the player wants and how to achieve it. */
-bool planner_generate_open(ApiClient *api, const char *user_input,
-                            const char *game_state, Plan *plan);
-
 #endif

@@ -75,6 +75,7 @@ function updatePlayer(data) {
   if (!data) return;
   $('char-name').textContent = data.name || '---';
   $('char-age').textContent = data.age || '--';
+  $('char-gender').textContent = data.gender || '--';
   $('money-text').textContent = (data.money || 0) + ' G';
 
   const st = data.statusText || '正常';
@@ -151,10 +152,23 @@ function refreshUI(data) {
   state.apiReady = data.apiReady;
   state.worldReady = data.worldReady;
   state._npcs = data.npcs || [];
-  state._mapPoints = data.mapPoints || [];
 
   /* Update NPC button with total NPC character card count */
   $('btn-npc').textContent = 'NPC (' + state._npcs.length + ')';
+
+  /* Token usage display */
+  if (data.tokenUsage && data.tokenUsage.calls > 0) {
+    const tu = data.tokenUsage;
+    const total = parseInt(tu.total) || 0;
+    const calls = tu.calls || 0;
+    if (total >= 1000000) {
+      $('env-tokens').textContent = (total / 1000000).toFixed(1) + 'M (' + calls + '次)';
+    } else if (total >= 1000) {
+      $('env-tokens').textContent = (total / 1000).toFixed(1) + 'K (' + calls + '次)';
+    } else {
+      $('env-tokens').textContent = total + ' (' + calls + '次)';
+    }
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -189,11 +203,6 @@ async function sendMessage() {
   } else {
     addSystemMsg('错误: ' + (r.error || '未知'));
   }
-}
-
-async function loadState() {
-  const r = await api('get_state');
-  if (r.ok) refreshUI(r);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -319,6 +328,7 @@ async function showSaveManager() {
 function showNewWorld() {
   let html = '<div class="form-row"><label>姓名</label><input id="wc-name" value=""></div>';
   html += '<div class="form-row"><label>年龄</label><input id="wc-age" value="25"></div>';
+  html += '<div class="form-row"><label>性别</label><select id="wc-gender"><option value="">--</option><option value="男">男</option><option value="女">女</option><option value="其他">其他</option></select></div>';
   html += '<div class="form-row"><label>衣着</label><input id="wc-clothing" value=""></div>';
   html += '<div class="form-row"><label>金钱</label><input id="wc-money" value="100"></div>';
   html += '<div class="form-row" style="display:flex;gap:8px">' +
@@ -337,6 +347,7 @@ function showNewWorld() {
     const r = await api('create_world', {
       name: $('wc-name').value,
       age: $('wc-age').value,
+      gender: $('wc-gender').value,
       clothing: $('wc-clothing').value,
       money: $('wc-money').value,
       appearance: $('wc-app').value,
@@ -364,12 +375,12 @@ function showDetails(title, items, type) {
   if (!items || items.length === 0) {
     html = '<p style="color:var(--text-muted)">(无)</p>';
   } else if (type === 'skills') {
-    items.forEach(s => { html += '<div style="padding:4px 0">' + s.name + '  <strong>Lv.' + s.level + '</strong></div>'; });
+    items.forEach(s => { html += '<div style="padding:4px 0;font-size:13px">' + escapeHtml(s.name) + '  <strong>Lv.' + s.level + '</strong></div>'; });
   } else if (type === 'items') {
-    items.forEach(i => { html += '<div style="padding:4px 0">' + i.name + '  x' + i.qty + '</div>'; });
+    items.forEach(i => { html += '<div style="padding:4px 0;font-size:13px">' + escapeHtml(i.name) + '  x' + i.qty + '</div>'; });
   } else if (type === 'relations') {
     items.forEach(r => {
-      html += '<div style="padding:4px 0">' + r.target + '  [' + r.type + ']  好感度: ' + r.affinity + '</div>';
+      html += '<div style="padding:4px 0;font-size:13px">' + escapeHtml(r.target) + '  [' + escapeHtml(r.type) + ']  好感度: ' + r.affinity + '</div>';
     });
   }
   showModal(title, html);
@@ -554,49 +565,231 @@ $('btn-relations').onclick = async function() {
   const ch = r.character || r.player;
   if (r.ok && ch) showDetails('人物关系', ch.relations, 'relations');
 };
+/* ═══════════════════════════════════════════════════════════════
+   Map drill-down helpers
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Given a point list, find visible points based on nav state.
+   Uses nearest-neighbor: a lower-level point belongs to the
+   closest higher-level point among all higher-level candidates. */
+function mapGetVisible(allPoints, nav) {
+  if (!allPoints || !allPoints.length) return [];
+
+  /* Default: top level (大地点) */
+  if (nav.level === 2) {
+    return allPoints.filter(function(p) { return p.level === 2; });
+  }
+
+  /* For levels 1 and 0: find children of the last selected parent */
+  if (nav.parents.length === 0) {
+    return allPoints.filter(function(p) { return p.level === nav.level; });
+  }
+
+  var parent = nav.parents[nav.parents.length - 1];
+  var targetLevel = nav.level;
+  var candidates = allPoints.filter(function(p) { return p.level === targetLevel; });
+  /* Higher-level points that could be parents of these candidates */
+  var higherPoints = allPoints.filter(function(p) { return p.level > targetLevel; });
+
+  return candidates.filter(function(c) {
+    var nearestName = null;
+    var nearestDist = 1e9;
+    for (var i = 0; i < higherPoints.length; i++) {
+      var hp = higherPoints[i];
+      var dx = c.x - hp.x;
+      var dy = c.y - hp.y;
+      var dist = dx * dx + dy * dy;
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearestName = hp.name;
+      }
+    }
+    return nearestName === parent.name;
+  });
+}
+
+/* Render the drill-down map modal */
+function mapRenderModal() {
+  var nav = window._mapNav;
+  var allPoints = window._mapAllPoints;
+  var visible = mapGetVisible(allPoints, nav);
+
+  var W = 520, H = 420, PAD = 30;
+  var sx = (W - PAD * 2) / 1000;
+  var sy = (H - PAD * 2) / 1000;
+  var colors = ['#34C759', '#007AFF', '#FF9500']; /* level 0,1,2 */
+  var levelNames = ['具体地点', '小地点', '大地点'];
+  var radiusByLevel = [4, 5, 7];
+
+  /* ── Breadcrumb ── */
+  var bcHtml = '';
+  for (var i = 0; i < nav.parents.length; i++) {
+    var p = nav.parents[i];
+    if (i > 0) bcHtml += ' <span style="color:var(--text-muted)">&rsaquo;</span> ';
+    bcHtml += '<span style="color:' + colors[p.level] + ';font-weight:500">' + p.name + '</span>';
+  }
+
+  /* ── Back button + controls ── */
+  var ctrlHtml = '<div style="margin-bottom:8px;display:flex;align-items:center;justify-content:center;gap:8px">';
+  if (nav.parents.length > 0) {
+    ctrlHtml += '<button class="btn btn-secondary btn-sm" id="map-back-btn">&larr; 返回</button>';
+  } else {
+    /* Spacer so layout is consistent */
+    ctrlHtml += '<span style="width:64px"></span>';
+  }
+  ctrlHtml += '<span style="font-size:12px;color:var(--text-primary)">';
+  ctrlHtml += (bcHtml || '全部大地点');
+  ctrlHtml += '</span>';
+  ctrlHtml += '<span style="font-size:11px;color:var(--text-muted)">（' + visible.length + '个' + levelNames[nav.level] + '）</span>';
+  if (nav.level < 2) {
+    ctrlHtml += '<button class="btn btn-secondary btn-sm" id="map-top-btn" title="回到顶层">&#x21E7; 顶层</button>';
+  }
+  ctrlHtml += '</div>';
+
+  /* ── SVG ── */
+  var svg = '<svg width="' + W + '" height="' + H + '" style="background:#1a1a2e;border-radius:8px" id="map-svg">';
+  /* Grid */
+  for (var g = 0; g <= 1000; g += 200) {
+    var gx = PAD + g * sx;
+    var gy = PAD + g * sy;
+    svg += '<line x1="' + gx + '" y1="' + PAD + '" x2="' + gx + '" y2="' + (H - PAD) + '" stroke="#ffffff10"/>';
+    svg += '<line x1="' + PAD + '" y1="' + gy + '" x2="' + (W - PAD) + '" y2="' + gy + '" stroke="#ffffff10"/>';
+  }
+  /* Points */
+  for (var i = 0; i < visible.length; i++) {
+    var pt = visible[i];
+    var cx = PAD + pt.x * sx;
+    var cy = PAD + pt.y * sy;
+    var color = colors[pt.level] || '#888';
+    var radius = radiusByLevel[pt.level] || 4;
+    var canDrill = pt.level > 0 && pt.level === nav.level;
+    var cls = canDrill ? 'map-point-drillable' : 'map-point-leaf';
+    svg += '<circle cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + radius + '" fill="' + color + '" stroke="#fff" stroke-width="0.6" class="' + cls + '" data-name="' + pt.name + '" data-level="' + pt.level + '" data-x="' + pt.x + '" data-y="' + pt.y + '"/>';
+    svg += '<text x="' + (cx + 9).toFixed(1) + '" y="' + (cy + 4).toFixed(1) + '" fill="' + color + '" font-size="10" style="pointer-events:none;font-weight:500">' + pt.name + '</text>';
+  }
+  svg += '</svg>';
+
+  /* ── Legend ── */
+  var legend = '<div style="text-align:center;margin-top:6px;font-size:11px;color:var(--text-muted)">';
+  if (nav.level === 2) {
+    legend += '<span style="color:#FF9500">● 大地点</span>  <span style="color:var(--text-muted)">— 点击可下钻查看子地点</span>';
+  } else if (nav.level === 1) {
+    legend += '<span style="color:#007AFF">● 小地点</span>  <span style="color:var(--text-muted)">— 点击可下钻查看子地点</span>';
+  } else {
+    legend += '<span style="color:#34C759">● 具体地点</span>  <span style="color:var(--text-muted)">— 终点层级</span>';
+  }
+  legend += '</div>';
+
+  /* ── Current location indicator ── */
+  var loc = window._mapCurrentLoc;
+  if (loc) {
+    legend += '<div style="text-align:center;margin-top:2px;font-size:11px;color:var(--text-muted)">当前位置: ' +
+      '<span style="color:var(--accent)">' + (loc.area || '?') + ' &rsaquo; ' + (loc.district || '?') + ' &rsaquo; ' + (loc.spot || '?') + '</span></div>';
+  }
+
+  /* ── Delete location section ── */
+  var delHtml = '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border-light)">' +
+    '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">删除地点 (点击下方地点名旁的 ✕ 按钮删除):</div>';
+  for (var d = 0; d < visible.length; d++) {
+    var pt = visible[d];
+    var lvlName = levelNames[pt.level] || '?';
+    delHtml += '<div style="display:flex;align-items:center;justify-content:space-between;padding:3px 0;font-size:12px">' +
+      '<span><span style="color:' + colors[pt.level] + '">●</span> ' + escapeHtml(pt.name) + ' <span style="color:var(--text-muted);font-size:10px">(' + lvlName + ')</span></span>' +
+      '<button class="btn btn-danger btn-sm map-del-btn" data-name="' + pt.name.replace(/"/g, '&quot;') + '" data-level="' + pt.level + '" title="删除此地点">✕</button>' +
+      '</div>';
+  }
+  delHtml += '</div>';
+
+  var html = ctrlHtml + '<div style="text-align:center">' + svg + '</div>' + legend + delHtml;
+
+  var title = '地图 — ' + levelNames[nav.level];
+  showModal(title, html, true);
+
+  /* ── Attach event listeners after DOM is populated ── */
+  setTimeout(function() {
+    var backBtn = document.getElementById('map-back-btn');
+    if (backBtn) {
+      backBtn.onclick = function() {
+        nav.parents.pop();
+        nav.level = Math.min(2, nav.level + 1);
+        mapRenderModal();
+      };
+    }
+
+    var topBtn = document.getElementById('map-top-btn');
+    if (topBtn) {
+      topBtn.onclick = function() {
+        nav.parents = [];
+        nav.level = 2;
+        mapRenderModal();
+      };
+    }
+
+    var svgEl = document.getElementById('map-svg');
+    if (svgEl) {
+      var circles = svgEl.querySelectorAll('circle[data-level]');
+      for (var k = 0; k < circles.length; k++) {
+        (function(circle) {
+          circle.onclick = function() {
+            var level = parseInt(circle.getAttribute('data-level'));
+            var name = circle.getAttribute('data-name');
+            var x = parseInt(circle.getAttribute('data-x'));
+            var y = parseInt(circle.getAttribute('data-y'));
+
+            if (level > 0) {
+              nav.parents.push({ name: name, level: level, x: x, y: y });
+              nav.level = level - 1;
+              mapRenderModal();
+            }
+          };
+        })(circles[k]);
+      }
+    }
+
+    /* Bind delete location buttons */
+    var delBtns = document.querySelectorAll('.map-del-btn');
+    for (var db = 0; db < delBtns.length; db++) {
+      (function(btn) {
+        btn.onclick = async function() {
+          var locName = btn.getAttribute('data-name');
+          var locLevel = btn.getAttribute('data-level');
+          if (!confirm('确定删除地点 "' + locName + '" 吗？此操作不可撤销。')) return;
+          var r = await api('delete_location', { level: locLevel, name: locName });
+          if (r.ok) {
+            addSystemMsg('已删除地点: ' + locName);
+            /* Refresh map data from state */
+            if (r.state && r.state.mapPoints) {
+              window._mapAllPoints = r.state.mapPoints;
+            }
+            /* Re-render map modal */
+            mapRenderModal();
+          } else {
+            addSystemMsg('删除失败: ' + (r.error || '未知错误'));
+          }
+        };
+      })(delBtns[db]);
+    }
+  }, 50);
+}
+
 $('btn-map').onclick = async function() {
   try {
-    const data = await api('get_state');
-    const points = (data && data.mapPoints && data.mapPoints.length) ? data.mapPoints : [];
+    var data = await api('get_state');
+    var points = (data && data.mapPoints && data.mapPoints.length) ? data.mapPoints : [];
     if (!points.length) {
       showModal('地图', '<p style="color:var(--text-muted);text-align:center">暂无地点数据<br>请先创建世界或探索新地点</p>');
       return;
     }
-    const loc = data.location || data.env || {};
-    const current = (loc.area||'?') + ' / ' + (loc.district||'?') + ' / ' + (loc.spot||'?');
-    const labels = ['具体地点','小地点','大地点'];
-    const colors = ['#34C759','#007AFF','#FF9500'];
-    const W = 500, H = 400, PAD = 30;
-    const sx = (W - PAD*2) / 1000;
-    const sy = (H - PAD*2) / 1000;
 
-    let svg = '<svg width="'+W+'" height="'+H+'" style="background:#1a1a2e;border-radius:8px">';
-    for (let g = 0; g <= 1000; g += 200) {
-      let gx = PAD + g * sx;
-      let gy = PAD + g * sy;
-      svg += '<line x1="'+gx+'" y1="'+PAD+'" x2="'+gx+'" y2="'+(H-PAD)+'" stroke="#ffffff10"/>';
-      svg += '<line x1="'+PAD+'" y1="'+gy+'" x2="'+(W-PAD)+'" y2="'+gy+'" stroke="#ffffff10"/>';
-    }
-    for (let i = 0; i < points.length; i++) {
-      let pt = points[i];
-      let cx = PAD + pt.x * sx;
-      let cy = PAD + pt.y * sy;
-      let color = colors[pt.level] || '#888';
-      let radius = pt.level === 2 ? 6 : (pt.level === 1 ? 4 : 3);
-      svg += '<circle cx="'+cx.toFixed(1)+'" cy="'+cy.toFixed(1)+'" r="'+radius+'" fill="'+color+'" stroke="#fff" stroke-width="0.5"/>';
-      svg += '<text x="'+(cx+8).toFixed(1)+'" y="'+(cy+4).toFixed(1)+'" fill="'+color+'" font-size="10">'+pt.name+'</text>';
-    }
-    svg += '</svg>';
+    var loc = data.location || data.env || {};
+    window._mapCurrentLoc = loc;
+    window._mapAllPoints = points;
+    /* Reset navigation to top level on each open */
+    window._mapNav = { level: 2, parents: [] };
 
-    var html = '<div style="text-align:center;margin-bottom:6px;color:var(--text-muted)">当前: '+current+'</div>';
-    html += '<div style="text-align:center">'+svg+'</div>';
-    html += '<div style="text-align:center;margin-top:6px;font-size:11px;color:var(--text-muted)">';
-    html += '<span style="color:#FF9500">●大地点</span> ';
-    html += '<span style="color:#007AFF">●小地点</span> ';
-    html += '<span style="color:#34C759">●具体地点</span></div>';
-    showModal('地图 ('+points.length+'个地点)', html, true);
+    mapRenderModal();
   } catch(e) {
-    showModal('地图', '<p style="color:red">加载失败: '+e.message+'</p>');
+    showModal('地图', '<p style="color:red">加载失败: ' + e.message + '</p>');
   }
 };
 
@@ -614,20 +807,117 @@ $('btn-npc').onclick = async function() {
     let sorted = npcs.slice().sort(function(a,b) {
       return (presentNames[b.name] ? 1 : 0) - (presentNames[a.name] ? 1 : 0);
     });
-    sorted.forEach(function(n) {
+    sorted.forEach(function(n, idx) {
       let st = n.statusText || '正常';
       let marker = presentNames[n.name] ? ' <span style="color:#34C759">●在场</span>' : '';
-      html += '<div style="padding:6px 0;border-bottom:1px solid var(--border-light)">' +
-        '<strong>' + n.name + '</strong>' + marker +
-        '  年龄:' + (n.age||'?') + '岁<br>' +
-        '<span style="font-size:11px;color:var(--text-muted)">身份:' + (n.personality||'?') +
-        '  状态:' + st + '  好感:' + (n.playerAffinity||0) +
+      let hasSkills = n.skills && n.skills.length > 0;
+      let hasItems = n.items && n.items.length > 0;
+      html += '<div class="npc-card-entry" style="padding:8px 0;border-bottom:1px solid var(--border-light)">' +
+        '<div style="display:flex;align-items:flex-start;justify-content:space-between">' +
+        '<div style="flex:1">' +
+        '<strong>' + escapeHtml(n.name) + '</strong>' + marker +
+        '  <span style="font-size:12px;color:var(--text-secondary)">年龄:' + (n.age||'?') + '岁 性别:' + escapeHtml(n.gender||'?') + '</span>' +
+        '<br>' +
+        '<span style="font-size:11px;color:var(--text-muted)">身份:' + escapeHtml(n.personality||'?') +
+        (n.home ? '  家:' + escapeHtml(n.home) : '') +
+        '  状态:' + escapeHtml(st) + '  好感:' + (n.playerAffinity||0) +
         '  金钱:' + (n.money||0) + 'G</span>' +
+        '</div>' +
+        '<button class="btn btn-secondary btn-sm npc-detail-btn" data-idx="' + idx + '" title="查看详情">详情</button>' +
         '</div>';
+      /* Show skill summary if any */
+      if (hasSkills) {
+        html += '<div style="margin-top:4px;font-size:12px;color:var(--accent)">技能: ';
+        n.skills.forEach(function(sk, i) {
+          if (i > 0) html += ', ';
+          html += escapeHtml(sk.name) + ' Lv.' + sk.level;
+        });
+        html += '</div>';
+      }
+      if (hasItems) {
+        html += '<div style="margin-top:3px;font-size:12px;color:var(--text-secondary)">持有: ';
+        n.items.forEach(function(it, i) {
+          if (i > 0) html += ', ';
+          html += escapeHtml(it.name) + ' x' + it.qty;
+        });
+        html += '</div>';
+      }
+      html += '</div>';
     });
   }
-  showModal('NPC 角色卡 (' + npcs.length + '个)', html);
+  showModal('NPC 角色卡 (' + npcs.length + '个)', html, true);
+
+  /* Bind detail buttons after DOM is populated */
+  setTimeout(function() {
+    var detailBtns = document.querySelectorAll('.npc-detail-btn');
+    for (var i = 0; i < detailBtns.length; i++) {
+      (function(btn) {
+        btn.onclick = function() {
+          var idx = parseInt(btn.getAttribute('data-idx'));
+          /* Re-fetch state to get fresh NPC data */
+          api('get_state').then(function(state) {
+            var npcList = (state && state.npcs) ? state.npcs : npcs;
+            if (idx >= 0 && idx < npcList.length) {
+              showNpcDetail(npcList[idx]);
+            }
+          });
+        };
+      })(detailBtns[i]);
+    }
+  }, 50);
 };
+
+/* Show detailed view of a single NPC */
+function showNpcDetail(n) {
+  var html = '';
+  /* Basic info */
+  html += '<div style="margin-bottom:10px">';
+  html += '<strong style="font-size:16px">' + escapeHtml(n.name) + '</strong>';
+  html += '  年龄:' + (n.age||'?') + '岁  性别:' + escapeHtml(n.gender||'?');
+  if (n.clothing) html += '  衣着:' + escapeHtml(n.clothing);
+  html += '</div>';
+
+  /* Attrs */
+  if (n.attrs) {
+    html += '<div style="margin-bottom:8px;font-size:12px;color:var(--text-secondary)">';
+    html += '颜值:' + (n.attrs.appearance||0) + '  体质:' + (n.attrs.constitution||0) + '  智力:' + (n.attrs.intelligence||0);
+    html += '</div>';
+  }
+
+  /* Personality & Status */
+  html += '<div style="margin-bottom:8px;font-size:12px;color:var(--text-secondary)">';
+  html += '性格:' + escapeHtml(n.personality||'?');
+  if (n.home) html += '  住所:' + escapeHtml(n.home);
+  html += '  状态:' + escapeHtml(n.statusText||'正常');
+  html += '  好感度:' + (n.playerAffinity||0) + '  金钱:' + (n.money||0) + 'G';
+  html += '</div>';
+
+  /* Skills */
+  html += '<div class="section-label" style="margin-top:12px">技能 (' + (n.skillCount || (n.skills ? n.skills.length : 0)) + ')</div>';
+  if (n.skills && n.skills.length > 0) {
+    html += '<div style="font-size:12px">';
+    n.skills.forEach(function(s) {
+      html += '<div style="padding:2px 0">' + escapeHtml(s.name) + '  <strong>Lv.' + s.level + '</strong></div>';
+    });
+    html += '</div>';
+  } else {
+    html += '<div style="font-size:12px;color:var(--text-muted)">(无)</div>';
+  }
+
+  /* Items */
+  html += '<div class="section-label" style="margin-top:10px">持有物 (' + (n.itemCount || (n.items ? n.items.length : 0)) + ')</div>';
+  if (n.items && n.items.length > 0) {
+    html += '<div style="font-size:13px">';
+    n.items.forEach(function(it) {
+      html += '<div style="padding:2px 0">' + escapeHtml(it.name) + '  x' + it.qty + '</div>';
+    });
+    html += '</div>';
+  } else {
+    html += '<div style="font-size:13px;color:var(--text-muted)">(无)</div>';
+  }
+
+  showModal('NPC: ' + n.name, html);
+}
 
 $('modal-close').onclick = hideModal;
 $('modal-overlay').onclick = function(e) {
@@ -644,7 +934,22 @@ $('modal-overlay').onclick = function(e) {
     if (r.ok) {
       refreshUI(r);
       if (r.worldReady) {
-        addSystemMsg('世界已就绪。输入指令开始冒险。');
+        /* Load chat history */
+        try {
+          const chat = await api('get_chat_history');
+          if (Array.isArray(chat) && chat.length > 0) {
+            addSystemMsg('── 以下为历史聊天记录 ──');
+            chat.forEach(function(msg) {
+              if (msg.role === 'player') addPlayerMsg(msg.text);
+              else if (msg.role === 'ai') addAIMsg(msg.text);
+            });
+            addSystemMsg('── 历史记录结束，世界已就绪 ──');
+          } else {
+            addSystemMsg('世界已就绪。输入指令开始冒险。');
+          }
+        } catch (e2) {
+          addSystemMsg('世界已就绪。输入指令开始冒险。');
+        }
       } else if (r.apiReady) {
         addSystemMsg('API 已配置。点击 [新建] 创建新世界。');
       } else {

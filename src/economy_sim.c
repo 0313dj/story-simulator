@@ -1,3 +1,4 @@
+#include "log.h"
 #include "economy_sim.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,7 +47,7 @@ static void set_int_var(WorldState *ws, const char *name, int val)
         v = &ws->variables[ws->variable_count++];
         memset(v, 0, sizeof(*v));
         v->id = ws->variable_count - 1;
-        strncpy(v->name, name, sizeof(v->name) - 1);
+        safe_strcpy(v->name, name, sizeof(v->name));
         v->type = VAR_INT;
     }
     v->int_val = val;

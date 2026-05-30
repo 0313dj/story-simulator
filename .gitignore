@@ -1,6 +1,8 @@
 # Build artifacts
 src/*.o
 bin/sim.exe
+bin/sim.log
+bin/saves/
 
 # Sensitive / runtime-generated
 bin/secrets.dat
@@ -12,3 +14,4 @@ saves/
 *~
 .DS_Store
 Thumbs.db
+nul

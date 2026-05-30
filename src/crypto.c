@@ -1,4 +1,5 @@
 #include "crypto.h"
+#include "log.h"
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,60 +102,6 @@ char *crypto_decrypt(const char *b64_cipher)
     return result;
 }
 
-/* ── 文件存取 ── */
-bool crypto_save(const char *filename, const char *endpoint,
-                 const char *key, const char *model)
-{
-    char *ep_enc  = crypto_encrypt(endpoint ? endpoint : "");
-    char *key_enc = crypto_encrypt(key ? key : "");
-    char *md_enc  = crypto_encrypt(model ? model : "");
-
-    if (!ep_enc || !key_enc || !md_enc) {
-        free(ep_enc); free(key_enc); free(md_enc);
-        return false;
-    }
-
-    FILE *fp = fopen(filename, "w");
-    if (!fp) { free(ep_enc); free(key_enc); free(md_enc); return false; }
-    fprintf(fp, "%s\n%s\n%s\n", ep_enc, key_enc, md_enc);
-    fclose(fp);
-
-    /* 内存中擦除明文 */
-    free(ep_enc); free(key_enc); free(md_enc);
-    return true;
-}
-
-bool crypto_load(const char *filename, char *out_endpoint, int ep_size,
-                 char *out_key, int key_size, char *out_model, int md_size)
-{
-    FILE *fp = fopen(filename, "r");
-    if (!fp) return false;
-
-    char line[3][1024];
-    int n = 0;
-    for (int i = 0; i < 3; i++) {
-        if (!fgets(line[i], sizeof(line[i]), fp)) break;
-        size_t len = strlen(line[i]);
-        while (len > 0 && (line[i][len-1] == '\n' || line[i][len-1] == '\r'))
-            line[i][--len] = '\0';
-        n++;
-    }
-    fclose(fp);
-
-    if (n < 3) return false;
-
-    if (out_endpoint) { char *p = crypto_decrypt(line[0]);
-        if (p) { strncpy(out_endpoint, p, ep_size - 1); free(p); } }
-
-    if (out_key) { char *p = crypto_decrypt(line[1]);
-        if (p) { strncpy(out_key, p, key_size - 1); free(p); } }
-
-    if (out_model) { char *p = crypto_decrypt(line[2]);
-        if (p) { strncpy(out_model, p, md_size - 1); free(p); } }
-
-    return true;
-}
-
 /* ── 多配置文件存取（V2格式）── */
 
 int crypto_load_profiles(ApiProfile *out, int max_count)
@@ -232,10 +179,10 @@ int crypto_load_profiles(ApiProfile *out, int max_count)
     char *md  = crypto_decrypt(lines[2]);
     int ret = 0;
     if (ep && key && md) {
-        strncpy(out[0].name, "Default", MAX_PROFILE_NAME - 1);
-        strncpy(out[0].endpoint, ep,  255);
-        strncpy(out[0].api_key,  key, 255);
-        strncpy(out[0].model,    md,  63);
+        safe_strcpy(out[0].name, "Default", MAX_PROFILE_NAME);
+        safe_strcpy(out[0].endpoint, ep,  sizeof(out[0].endpoint));
+        safe_strcpy(out[0].api_key,  key, sizeof(out[0].api_key));
+        safe_strcpy(out[0].model,    md,  sizeof(out[0].model));
         ret = 1;
     }
     free(ep); free(key); free(md); free(raw);
@@ -244,7 +191,19 @@ int crypto_load_profiles(ApiProfile *out, int max_count)
 
 bool crypto_save_profiles(const ApiProfile *profiles, int count)
 {
-    if (count <= 0 || count > MAX_API_PROFILES) return false;
+    if (count < 0 || count > MAX_API_PROFILES) return false;
+
+    /* Allow count==0 to clear all profiles */
+    if (count == 0) {
+        char *ep = crypto_encrypt("0\n");
+        if (!ep) return false;
+        FILE *fp = fopen("secrets.dat", "w");
+        if (!fp) { free(ep); return false; }
+        fprintf(fp, "V2\n%s", ep);
+        fclose(fp);
+        free(ep);
+        return true;
+    }
 
     int cap = 65536;
     char *buf = (char *)malloc(cap);

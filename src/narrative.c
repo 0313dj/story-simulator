@@ -1,3 +1,4 @@
+#include "log.h"
 #include "narrative.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,10 +57,13 @@ const char *narrative_get_system_prompt(void)
         "你可以在一次回复中交替使用NPC对话和场景描述。\n\n"
         "[行为准则]\n"
         "- 严格依据下方提供的游戏状态信息进行裁决，不得凭空编造\n"
-        "- NPC的行为必须与其身份、性格、当前状态一致\n"
-        "- 注意时间、天气对场景的影响（深夜不应出现热闹集市，暴雨天路人稀少）\n"
+        "- NPC的行为和对话必须与其身份、性格、当前状态严格一致\n"
+        "- NPC出现在与其身份相符的地点\n"
+        "- 必须根据游戏中的当前时间决定场景氛围和NPC行为\n"
+        "- 注意天气对场景的影响\n"
         "- 技能检定：玩家使用技能时，根据技能等级(0-100)判断成败。高等级(70+)大概率成功\n"
         "- NPC好感度变化应有理有据，一次交互变化不宜超过±10\n"
+        "- 所有场景描写、NPC对话、事件发展必须严格符合当前时代背景\n"
         "- 新地点的名称应与当前时代背景一致\n\n"
         "[叙事原则]\n"
         "- 叙事应生动、具体、有画面感\n"
@@ -72,19 +76,13 @@ const char *narrative_get_system_prompt(void)
         "- 禁止代控玩家角色（不要说玩家做了什么决定或说了什么话）\n"
         "- 禁止修改游戏状态（此模块只负责文本输出）\n"
         "- 禁止输出任何标签格式（TEXT:, CHANGES:等）——只输出纯叙事文本\n"
-        "- 禁止使用英文名\n\n"
+        "- 禁止使用英文名\n"
+        "- 如果用户输入以『(续前场景)』开头，表示当前地点环境已在上一轮叙事中详细\n"
+        "  描写过（光线、气味、建筑、氛围等），你必须直接延续剧情，不得重复描写环境。\n"
+        "  重点放在NPC对话、动作推进、玩家互动上，仅当场景发生明显变化时才用一两句话说明。\n\n"
         "─── 以下是当前游戏状态与事件信息，请据此生成叙事 ───";
 }
 
-/* ── Refinement prompt (shorter, for polishing existing text) ── */
-
-const char *narrative_get_refinement_prompt(void)
-{
-    return
-        "你是一个叙事润色引擎。请对以下游戏叙事进行润色，使其更生动、更有画面感。\n"
-        "保持原有的信息完整和NPC对话内容，只改进文笔和细节描写。\n"
-        "只输出润色后的文本，不要添加任何其他内容。";
-}
 
 /* ═══════════════════════════════════════════════════════════════
    Narrative Generation
@@ -180,65 +178,9 @@ bool narrative_generate(ApiClient *api, const WorldResult *wr,
 
     /* Set style tag */
     if (wr->style != NSTYLE_AUTO) {
-        strncpy(nt->style, narrative_style_str(wr->style), NARR_MAX_STYLE_LEN - 1);
+        safe_strcpy(nt->style, narrative_style_str(wr->style), NARR_MAX_STYLE_LEN);
     } else {
-        strncpy(nt->style, "generated", NARR_MAX_STYLE_LEN - 1);
-    }
-
-    return nt->text[0] != '\0';
-}
-
-/* ── Narrative Refinement ── */
-
-bool narrative_refine(ApiClient *api, const WorldResult *wr,
-                       const char *current_text, NarrativeText *nt)
-{
-    nt_init(nt);
-
-    if (!api || !current_text || !current_text[0]) return false;
-
-    char prompt[16384];
-    int pos = 0;
-
-    /* Style context */
-    if (wr && wr->style != NSTYLE_AUTO) {
-        pos += snprintf(prompt + pos, sizeof(prompt) - pos,
-            "叙事风格：%s\n\n", narrative_style_str(wr->style));
-    }
-
-    /* Context for refinement */
-    if (wr && wr->context[0]) {
-        pos += snprintf(prompt + pos, sizeof(prompt) - pos,
-            "场景背景：%s\n\n", wr->context);
-    }
-
-    pos += snprintf(prompt + pos, sizeof(prompt) - pos,
-        "原文：\n%s\n\n"
-        "请润色以上叙事文本，使其更生动、更有画面感、更符合角色性格。"
-        "保持原有的信息完整和NPC对话内容，只改进文笔和细节描写。"
-        "只输出润色后的文本。", current_text);
-
-    char raw[NARR_MAX_TEXT_LEN];
-    memset(raw, 0, sizeof(raw));
-
-    const char *sys = narrative_get_refinement_prompt();
-    if (!api_chat(api, sys, prompt, raw, sizeof(raw), 1024)) {
-        return false;
-    }
-
-    /* Clean output */
-    char *p = raw;
-    char *end = p + strlen(p) - 1;
-    while (end > p && (*end == '\n' || *end == '\r' || *end == ' '))
-        *end-- = '\0';
-
-    strncpy(nt->text, p, NARR_MAX_TEXT_LEN - 1);
-    nt->text[NARR_MAX_TEXT_LEN - 1] = '\0';
-
-    if (wr && wr->style != NSTYLE_AUTO) {
-        strncpy(nt->style, narrative_style_str(wr->style), NARR_MAX_STYLE_LEN - 1);
-    } else {
-        strncpy(nt->style, "refined", NARR_MAX_STYLE_LEN - 1);
+        safe_strcpy(nt->style, "generated", NARR_MAX_STYLE_LEN);
     }
 
     return nt->text[0] != '\0';

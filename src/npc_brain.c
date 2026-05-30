@@ -188,8 +188,8 @@ bool nb_add_goal(NpcBrain *brain, GoalType type, const char *target,
     Goal *g = &brain->goals[insert_at];
     memset(g, 0, sizeof(*g));
     g->type = type;
-    if (target)  strncpy(g->target, target, sizeof(g->target) - 1);
-    if (params)  strncpy(g->params, params, sizeof(g->params) - 1);
+    if (target)  safe_strcpy(g->target, target, sizeof(g->target));
+    if (params)  safe_strcpy(g->params, params, sizeof(g->params));
     g->priority = clamp_int(priority, 0, 100);
     g->created_tick = tick;
     g->expiry_tick  = expiry;
@@ -487,17 +487,17 @@ bool nb_generate_plan_ai(NpcBrain *brain, const Goal *goal,
         char *p2 = p1 ? strchr(p1 + 1, '|') : NULL;
         if (p1 && p2) {
             *p1 = '\0'; *p2 = '\0';
-            strncpy(brain->current_plan.steps[step_idx].action, line,
-                    PLAN_MAX_ACTION_LEN - 1);
-            strncpy(brain->current_plan.steps[step_idx].target, p1 + 1,
-                    PLAN_MAX_TARGET_LEN - 1);
+            safe_strcpy(brain->current_plan.steps[step_idx].action, line,
+                    PLAN_MAX_ACTION_LEN);
+            safe_strcpy(brain->current_plan.steps[step_idx].target, p1 + 1,
+                    PLAN_MAX_TARGET_LEN);
             brain->current_plan.steps[step_idx].estimated_ticks = atoi(p2 + 1);
             if (brain->current_plan.steps[step_idx].estimated_ticks <= 0)
                 brain->current_plan.steps[step_idx].estimated_ticks = 30;
         } else {
             /* No pipe: treat whole line as action */
-            strncpy(brain->current_plan.steps[step_idx].action, line,
-                    PLAN_MAX_ACTION_LEN - 1);
+            safe_strcpy(brain->current_plan.steps[step_idx].action, line,
+                    PLAN_MAX_ACTION_LEN);
             brain->current_plan.steps[step_idx].estimated_ticks = 30;
         }
         step_idx++;

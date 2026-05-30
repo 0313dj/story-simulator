@@ -25,7 +25,7 @@ int re_register(RuleEngine *re, int priority, const char *condition,
     memset(r, 0, sizeof(*r));
     r->id = re->next_id++;
     r->priority = priority;
-    strncpy(r->condition, condition, RE_MAX_CONDITION_LEN - 1);
+    safe_strcpy(r->condition, condition, RE_MAX_CONDITION_LEN);
     memcpy(r->effects, effects, effect_count * sizeof(RuleEffect));
     r->effect_count = effect_count;
     r->enabled = true;
@@ -163,15 +163,15 @@ static bool entity_get_str(const CharacterCard *entity, const char *field,
     if (!entity || !field || !*field) return false;
 
     if (strcmp(field, "name") == 0) {
-        strncpy(out_str, entity->name, out_size - 1);
+        safe_strcpy(out_str, entity->name, out_size);
         return true;
     }
     if (strcmp(field, "clothing") == 0) {
-        strncpy(out_str, entity->clothing, out_size - 1);
+        safe_strcpy(out_str, entity->clothing, out_size);
         return true;
     }
     if (strcmp(field, "personality") == 0) {
-        strncpy(out_str, entity->personality, out_size - 1);
+        safe_strcpy(out_str, entity->personality, out_size);
         return true;
     }
     return false;
@@ -411,7 +411,7 @@ static bool parse_atom(Lexer *l, const CharacterCard *entity, const WorldState *
     }
 
     char left_field[128];
-    strncpy(left_field, l->current.text, sizeof(left_field) - 1);
+    safe_strcpy(left_field, l->current.text, sizeof(left_field));
     lex_next(l);
 
     /* Operator */
@@ -430,7 +430,7 @@ static bool parse_atom(Lexer *l, const CharacterCard *entity, const WorldState *
     if (l->current.type == TK_NUMBER) {
         right_int = l->current.int_val;
     } else if (l->current.type == TK_STRING) {
-        strncpy(right_str, l->current.text, sizeof(right_str) - 1);
+        safe_strcpy(right_str, l->current.text, sizeof(right_str));
         right_is_str = true;
     } else if (l->current.type == TK_IDENT) {
         /* Could be an enum value like BANKRUPT, DEAD, HUNGRY, TIRED, NORMAL, etc.
@@ -441,7 +441,7 @@ static bool parse_atom(Lexer *l, const CharacterCard *entity, const WorldState *
                 /* OK, use int comparison */
             } else {
                 /* Treat as string / enum value */
-                strncpy(right_str, l->current.text, sizeof(right_str) - 1);
+                safe_strcpy(right_str, l->current.text, sizeof(right_str));
                 right_is_str = true;
             }
         } else {
@@ -451,7 +451,7 @@ static bool parse_atom(Lexer *l, const CharacterCard *entity, const WorldState *
             if (endp && *endp == '\0') {
                 right_int = (int)v;
             } else {
-                strncpy(right_str, l->current.text, sizeof(right_str) - 1);
+                safe_strcpy(right_str, l->current.text, sizeof(right_str));
                 right_is_str = true;
             }
         }
@@ -670,11 +670,11 @@ void re_apply_effects(const Rule *rule, CharacterCard *entity,
         case EFFECT_SET_STRING:
             if (e->str_value[0]) {
                 if (strcmp(e->target, "name") == 0) {
-                    strncpy(entity->name, e->str_value, MAX_NAME_LEN - 1);
+                    safe_strcpy(entity->name, e->str_value, MAX_NAME_LEN);
                 } else if (strcmp(e->target, "clothing") == 0) {
-                    strncpy(entity->clothing, e->str_value, MAX_CLOTHING_LEN - 1);
+                    safe_strcpy(entity->clothing, e->str_value, MAX_CLOTHING_LEN);
                 } else if (strcmp(e->target, "personality") == 0) {
-                    strncpy(entity->personality, e->str_value, MAX_PERSONALITY_LEN - 1);
+                    safe_strcpy(entity->personality, e->str_value, MAX_PERSONALITY_LEN);
                 }
             }
             break;
@@ -687,12 +687,12 @@ void re_apply_effects(const Rule *rule, CharacterCard *entity,
                     if (cur < e->int_value) {
                         /* Set to min */
                         RuleEffect set_eff = {EFFECT_SET_INT, "", e->int_value, 0, ""};
-                        strncpy(set_eff.target, e->target, RE_MAX_TARGET_LEN - 1);
+                        safe_strcpy(set_eff.target, e->target, RE_MAX_TARGET_LEN);
                         re_apply_effects(&(Rule){.effects = {set_eff}, .effect_count = 1},
                                         entity, events, tick);
                     } else if (cur > e->int_value2) {
                         RuleEffect set_eff = {EFFECT_SET_INT, "", e->int_value2, 0, ""};
-                        strncpy(set_eff.target, e->target, RE_MAX_TARGET_LEN - 1);
+                        safe_strcpy(set_eff.target, e->target, RE_MAX_TARGET_LEN);
                         re_apply_effects(&(Rule){.effects = {set_eff}, .effect_count = 1},
                                         entity, events, tick);
                     }
@@ -721,7 +721,7 @@ void re_register_builtins(RuleEngine *re)
     {
         effects[0].type = EFFECT_SET_STATUS;
         effects[0].int_value = STATUS_SAD;
-        strncpy(effects[0].target, "status", RE_MAX_TARGET_LEN - 1);
+        safe_strcpy(effects[0].target, "status", RE_MAX_TARGET_LEN);
         re_register(re, 100, "money < 0", effects, 1);
     }
 
@@ -729,7 +729,7 @@ void re_register_builtins(RuleEngine *re)
     {
         effects[0].type = EFFECT_SET_STATUS;
         effects[0].int_value = STATUS_INJURED;
-        strncpy(effects[0].target, "status", RE_MAX_TARGET_LEN - 1);
+        safe_strcpy(effects[0].target, "status", RE_MAX_TARGET_LEN);
         re_register(re, 99, "attr.constitution <= 0", effects, 1);
     }
 
@@ -738,7 +738,7 @@ void re_register_builtins(RuleEngine *re)
     {
         effects[0].type = EFFECT_SET_STATUS;
         effects[0].int_value = STATUS_NORMAL;
-        strncpy(effects[0].target, "status", RE_MAX_TARGET_LEN - 1);
+        safe_strcpy(effects[0].target, "status", RE_MAX_TARGET_LEN);
         re_register(re, 50, "money > 1000 AND status == SAD", effects, 1);
     }
 
@@ -747,7 +747,7 @@ void re_register_builtins(RuleEngine *re)
     {
         effects[0].type = EFFECT_SET_STATUS;
         effects[0].int_value = STATUS_NORMAL;
-        strncpy(effects[0].target, "status", RE_MAX_TARGET_LEN - 1);
+        safe_strcpy(effects[0].target, "status", RE_MAX_TARGET_LEN);
         re_register(re, 50, "attr.constitution > 0 AND status == INJURED", effects, 1);
     }
 
@@ -756,7 +756,7 @@ void re_register_builtins(RuleEngine *re)
     {
         effects[0].type = EFFECT_SET_STATUS;
         effects[0].int_value = STATUS_HUNGRY;
-        strncpy(effects[0].target, "status", RE_MAX_TARGET_LEN - 1);
+        safe_strcpy(effects[0].target, "status", RE_MAX_TARGET_LEN);
         re_register(re, 30, "money >= 0 AND money <= 10 AND status == NORMAL", effects, 1);
     }
 
@@ -765,7 +765,7 @@ void re_register_builtins(RuleEngine *re)
     {
         effects[0].type = EFFECT_SET_STATUS;
         effects[0].int_value = STATUS_NORMAL;
-        strncpy(effects[0].target, "status", RE_MAX_TARGET_LEN - 1);
+        safe_strcpy(effects[0].target, "status", RE_MAX_TARGET_LEN);
         re_register(re, 30, "money > 10 AND status == HUNGRY", effects, 1);
     }
 }
@@ -786,8 +786,8 @@ bool ap_add_int_change(ActionProposal *ap, const char *entity,
     ActionProposalEntry *e = &ap->actions[ap->count];
     memset(e, 0, sizeof(*e));
     e->type = AP_CHANGE_INT;
-    strncpy(e->entity, entity, sizeof(e->entity) - 1);
-    strncpy(e->field, field, sizeof(e->field) - 1);
+    safe_strcpy(e->entity, entity, sizeof(e->entity));
+    safe_strcpy(e->field, field, sizeof(e->field));
     e->delta = delta;
     ap->count++;
     return true;
@@ -800,8 +800,8 @@ bool ap_add_int_set(ActionProposal *ap, const char *entity,
     ActionProposalEntry *e = &ap->actions[ap->count];
     memset(e, 0, sizeof(*e));
     e->type = AP_SET_INT;
-    strncpy(e->entity, entity, sizeof(e->entity) - 1);
-    strncpy(e->field, field, sizeof(e->field) - 1);
+    safe_strcpy(e->entity, entity, sizeof(e->entity));
+    safe_strcpy(e->field, field, sizeof(e->field));
     e->value = value;
     ap->count++;
     return true;
@@ -814,9 +814,9 @@ bool ap_add_str_set(ActionProposal *ap, const char *entity,
     ActionProposalEntry *e = &ap->actions[ap->count];
     memset(e, 0, sizeof(*e));
     e->type = AP_SET_STR;
-    strncpy(e->entity, entity, sizeof(e->entity) - 1);
-    strncpy(e->field, field, sizeof(e->field) - 1);
-    strncpy(e->str_value, value, sizeof(e->str_value) - 1);
+    safe_strcpy(e->entity, entity, sizeof(e->entity));
+    safe_strcpy(e->field, field, sizeof(e->field));
+    safe_strcpy(e->str_value, value, sizeof(e->str_value));
     ap->count++;
     return true;
 }
@@ -827,7 +827,7 @@ bool ap_add_status_set(ActionProposal *ap, const char *entity, int status_code)
     ActionProposalEntry *e = &ap->actions[ap->count];
     memset(e, 0, sizeof(*e));
     e->type = AP_SET_STATUS;
-    strncpy(e->entity, entity, sizeof(e->entity) - 1);
+    safe_strcpy(e->entity, entity, sizeof(e->entity));
     e->value = status_code;
     ap->count++;
     return true;
@@ -1104,27 +1104,5 @@ int re_process_proposal(const RuleEngine *re, const ActionProposal *ap,
     return rules_fired;
 }
 
-/* ── Convenience: apply legacy CHANGES through Rule Engine ── */
 
-int rule_engine_apply_changes(const RuleEngine *re, const char *changes_text,
-                              CharacterCard *player, CharacterCard *npcs,
-                              int npc_count, const WorldState *ws,
-                              EventLog *events, long long tick)
-{
-    /* Parse legacy CHANGES text into an ActionProposal */
-    ActionProposal ap;
-    ap_init(&ap);
-    int parsed = ap_parse_changes_text(changes_text, &ap);
 
-    if (parsed == 0) return 0;
-
-    /* Run through the Rule Engine pipeline */
-    ChangeSetFull cs;
-    int rules_fired = re_process_proposal(re, &ap, player, npcs, npc_count,
-                                          ws, &cs, events, tick);
-
-    /* Apply the validated ChangeSet */
-    cs_apply(&cs, player, npcs, npc_count, events, tick);
-
-    return rules_fired;
-}

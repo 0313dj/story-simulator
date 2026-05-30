@@ -11,17 +11,34 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
 {
     (void)hInst; (void)hPrev; (void)lpCmd; (void)nShow;
 
-    /* Switch to exe directory */
+    /* Switch to exe directory — use Wide APIs for Unicode-safe paths */
     {
-        char edir[512];
-        GetModuleFileNameA(NULL, edir, sizeof(edir));
-        char *slash = strrchr(edir, '\\');
-        if (slash) *slash = '\0';
-        SetCurrentDirectoryA(edir);
-        /* Bug #33: handle CreateDirectoryA failure */
-        if (!CreateDirectoryA("saves", NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
-            /* Non-fatal: saves directory may already exist or be inaccessible.
-               Save operations will check and report errors individually. */
+        wchar_t edir[512];
+        GetModuleFileNameW(NULL, edir, 512);
+        wchar_t *slash = wcsrchr(edir, L'\\');
+        if (slash) *slash = L'\0';
+        if (!SetCurrentDirectoryW(edir)) {
+            /* Working directory change failed — saves/logs will go to
+               whatever the current directory happens to be. Continue anyway
+               since the web server and game can still function. */
+            OutputDebugStringW(L"[sim] SetCurrentDirectoryW failed\n");
+        }
+
+        /* Create saves directory using absolute path.
+           Using absolute path ensures saves always go next to the exe,
+           regardless of whether SetCurrentDirectoryW succeeded. */
+        wchar_t saves_path[576];
+        swprintf(saves_path, 576, L"%s\\saves", edir);
+        /* Bug #33: CreateDirectoryW handles the full path and returns
+           ERROR_ALREADY_EXISTS if the directory is already present. */
+        if (!CreateDirectoryW(saves_path, NULL)) {
+            DWORD err = GetLastError();
+            if (err != ERROR_ALREADY_EXISTS) {
+                /* Non-fatal: save operations will check and report errors
+                   individually. The saves directory may be on a read-only
+                   filesystem or blocked by permissions. */
+                OutputDebugStringW(L"[sim] CreateDirectoryW(saves) failed\n");
+            }
         }
     }
 

@@ -51,29 +51,10 @@ void event_init(EventLog *log);
 int event_push(EventLog *log, long long tick, int source_id, int target_id,
                EventType type, const char *payload_fmt, ...);
 
-/* Query events by type. Writes matching indices into out_ids (max out_size).
-   Returns number of matches. */
-int event_query_by_type(const EventLog *log, EventType type,
-                        int *out_ids, int out_size);
-
-/* Query events by source entity. */
-int event_query_by_source(const EventLog *log, int source_id,
-                          int *out_ids, int out_size);
-
-/* Query events by tick range [tick_from, tick_to]. */
-int event_query_by_tick_range(const EventLog *log, long long tick_from,
-                              long long tick_to, int *out_ids, int out_size);
-
 /* Export all events as a JSON array string (caller must free). */
 char *event_export_json(const EventLog *log);
 
-/* Export a single event as a JSON object string (caller must free). */
-char *event_export_one_json(const Event *e);
-
 /* Get event type name string */
 const char *event_type_str(EventType t);
-
-/* Clear all events */
-void event_clear(EventLog *log);
 
 #endif

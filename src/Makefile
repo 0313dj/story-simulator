@@ -1,5 +1,5 @@
 CC      = gcc
-CFLAGS  = -Wall -Wextra -std=c11 -O2
+CFLAGS  = -Wall -Wextra -std=c11 -O2 -fexec-charset=UTF-8
 LDFLAGS = -lcurl -lws2_32
 
 UNAME_S := $(shell uname -s 2>/dev/null || echo Windows)

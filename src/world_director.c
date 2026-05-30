@@ -43,7 +43,7 @@ static void set_last_tick(WorldState *ws, const char *name, long long tick)
     WorldVariable *v = &ws->variables[ws->variable_count++];
     memset(v, 0, sizeof(*v));
     v->id = ws->variable_count - 1;
-    strncpy(v->name, name, sizeof(v->name) - 1);
+    safe_strcpy(v->name, name, sizeof(v->name));
     v->type = VAR_INT;
     v->int_val = stored;
 }

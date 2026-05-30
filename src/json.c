@@ -57,22 +57,27 @@ void jb_str(JsonBuf *j, const char *s)
 void jb_esc(JsonBuf *j, const char *s)
 {
     if (!j->buf) return;
-    ensure(j, (int)strlen(s) * 2 + 4);
+    /* Worst-case: every byte is a control char → \\u00XX (6 bytes).
+       Use 6x + 2 (quotes) + 1 (null) to avoid repeated reallocations. */
+    ensure(j, (int)strlen(s) * 6 + 4);
     if (!j->buf) return;
     j->buf[j->len++] = '"';
     for (const char *p = s; *p; p++) {
         switch (*p) {
         case '"':  j->buf[j->len++] = '\\'; j->buf[j->len++] = '"'; break;
         case '\\': j->buf[j->len++] = '\\'; j->buf[j->len++] = '\\'; break;
+        case '/':  j->buf[j->len++] = '\\'; j->buf[j->len++] = '/'; break;
         case '\n': j->buf[j->len++] = '\\'; j->buf[j->len++] = 'n'; break;
         case '\r': j->buf[j->len++] = '\\'; j->buf[j->len++] = 'r'; break;
         case '\t': j->buf[j->len++] = '\\'; j->buf[j->len++] = 't'; break;
         case '\b': j->buf[j->len++] = '\\'; j->buf[j->len++] = 'b'; break;
         case '\f': j->buf[j->len++] = '\\'; j->buf[j->len++] = 'f'; break;
         default:
-            /* Bug #29: escape all other control chars (0x00-0x1F) as \\u00XX */
+            /* Escape all other control chars (0x00-0x1F) as \\u00XX.
+               UTF-8 multi-byte bytes (0x80-0xFF) pass through unchanged. */
             if ((unsigned char)*p < 0x20) {
                 ensure(j, 6);
+                if (!j->buf) return;
                 j->buf[j->len++] = '\\';
                 j->buf[j->len++] = 'u';
                 j->buf[j->len++] = '0';

@@ -157,12 +157,4 @@ int re_process_proposal(const RuleEngine *re, const ActionProposal *ap,
                         int npc_count, const WorldState *ws,
                         ChangeSetFull *out_cs, EventLog *events, long long tick);
 
-/* Convenience: apply a legacy CHANGES string through the Rule Engine.
-   This is the transition path from old cc_apply_changes() to the new
-   Rule Engine pipeline. */
-int rule_engine_apply_changes(const RuleEngine *re, const char *changes_text,
-                              CharacterCard *player, CharacterCard *npcs,
-                              int npc_count, const WorldState *ws,
-                              EventLog *events, long long tick);
-
 #endif

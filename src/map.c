@@ -1,5 +1,4 @@
 #include "map.h"
-#include <math.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,45 +17,6 @@ void map_init(GameMap *map)
     strcpy(map->levels[2].level_name, "大地点");
     strcpy(map->levels[1].level_name, "小地点");
     strcpy(map->levels[0].level_name, "具体地点");
-}
-
-double map_distance(const MapPoint *a, const MapPoint *b, double scale)
-{
-    double dx = (double)(a->x - b->x);
-    double dy = (double)(a->y - b->y);
-    return sqrt(dx * dx + dy * dy) * scale;
-}
-
-double map_selected_distance(const GameMap *map, int from_idx, int to_idx)
-{
-    const MapLevel *level = &map->levels[map->zoom];
-    if (from_idx < 0 || from_idx >= level->count) return 0.0;
-    if (to_idx   < 0 || to_idx   >= level->count) return 0.0;
-    return map_distance(&level->points[from_idx], &level->points[to_idx], COORD_SCALE);
-}
-
-void map_zoom_to(GameMap *map, int level)
-{
-    if (level < 0) level = 0;
-    if (level > 2) level = 2;
-    map->zoom = level;
-}
-
-void map_select(GameMap *map, int index)
-{
-    MapLevel *level = &map->levels[map->zoom];
-    if (index < -1 || index >= level->count) return;
-    map->selected[map->zoom] = index;
-}
-
-const char *map_current_level_name(const GameMap *map)
-{
-    return map->levels[map->zoom].level_name;
-}
-
-const MapLevel *map_current_level(const GameMap *map)
-{
-    return &map->levels[map->zoom];
 }
 
 bool map_locate(GameMap *map, const char *area, const char *district, const char *spot)
@@ -301,6 +261,29 @@ void map_import_json(GameMap *map, const char *json)
 
         p = obj_end + 1;
     }
+}
+
+bool map_remove_point(GameMap *map, int level, const char *name)
+{
+    if (level < 0 || level >= 3 || !name || !name[0]) return false;
+    MapLevel *ml = &map->levels[level];
+    int idx = find_point(ml, name);
+    if (idx < 0) return false;
+    /* Shift remaining points left */
+    for (int i = idx; i < ml->count - 1; i++) {
+        ml->points[i] = ml->points[i + 1];
+    }
+    ml->count--;
+    /* Clear selection/parent if it pointed to the removed point */
+    if (map->selected[level] == idx) map->selected[level] = -1;
+    if (map->parent_idx[level] == idx) map->parent_idx[level] = -1;
+    return true;
+}
+
+bool map_has_point(const GameMap *map, int level, const char *name)
+{
+    if (level < 0 || level >= 3 || !name || !name[0]) return false;
+    return find_point(&map->levels[level], name) >= 0;
 }
 
 int map_export_json(const GameMap *map, char *out, int out_size)

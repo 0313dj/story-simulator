@@ -50,11 +50,9 @@ typedef struct {
 
 /* 初始化 */
 void api_init(ApiClient *api, const char *endpoint, const char *key, const char *model);
-void api_set_key(ApiClient *api, const char *key);
 bool api_chat(ApiClient *api, const char *system_prompt,
               const char *user_prompt, char *out, int out_size,
               int max_tokens);
-bool api_check_reachable(ApiClient *api);
 const char *api_last_error(const ApiClient *api);
 
 /* 第一步：发送用户输入+变量名目录（仅有键名无值），AI返回相关变量名 */
@@ -75,25 +73,18 @@ typedef struct {
     char locations[1024];     /* 地点: name|x|y 每行 */
     char npc_cards[8192];     /* NPC卡（---分隔） */
     char start_location[256]; /* 起始地点 大/小/具体 */
+    char start_time[128];     /* 初始时间 年|月|日|时|分|星期 */
+    char era[256];            /* 时代 */
     char raw[MAX_RESPONSE_LEN];   /* 原始响应 */
 } WorldCreateResult;
 
 /* 世界创建：用户完整角色卡+故事 → AI返回完整世界（含性格） */
 bool api_create_world(ApiClient *api,
-    const char *name, const char *age, const char *clothing,
-    const char *money, const char *appearance, const char *constitution,
+    const char *name, const char *age, const char *gender,
+    const char *clothing, const char *money,
+    const char *appearance, const char *constitution,
     const char *intelligence, const char *skills, const char *items,
     const char *story, WorldCreateResult *result);
-
-/* ── Phase 4: Narrative-only generation (Layer 3) ── */
-
-/* Generate narrative text only — no state changes.
-   Uses the narrative module's System Prompt.
-   The `context` parameter is the full game state + events summary.
-   Returns true on success; `out_text` is filled with the narrative. */
-bool api_generate_narrative(ApiClient *api, const char *system_prompt,
-                             const char *user_input, const char *context,
-                             char *out_text, int out_text_size);
 
 /* Query cumulative token usage.  Fills the three out parameters; returns
    the total number of API calls made. */

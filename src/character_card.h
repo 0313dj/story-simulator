@@ -23,11 +23,13 @@ typedef enum {
 } EntityType;
 
 #define MAX_NAME_LEN        64
+#define MAX_GENDER_LEN       8
 #define MAX_PERSONALITY_LEN 256
 #define MAX_CLOTHING_LEN    128
-#define MAX_ITEM_NAME_LEN   32
+#define MAX_HOME_LEN        128
+#define MAX_ITEM_NAME_LEN   128
 #define MAX_STATUS_LEN      64
-#define MAX_SKILL_NAME_LEN  32
+#define MAX_SKILL_NAME_LEN  64
 #define MAX_SKILLS          32
 #define MAX_ITEMS           16
 #define MAX_RELATIONS       32
@@ -97,8 +99,10 @@ typedef struct {
     EntityType  entity_type;      /* 实体类型 */
     char        name[MAX_NAME_LEN];
     int         age;
+    char        gender[MAX_GENDER_LEN];              /* 性别 */
     char        personality[MAX_PERSONALITY_LEN];  /* 性格身份 */
     char        clothing[MAX_CLOTHING_LEN];         /* 衣着 */
+    char        home[MAX_HOME_LEN];                 /* 家/住所 */
     Item        items[MAX_ITEMS];                   /* 持有物 */
     int         item_count;
     StatusType  status;                             /* 当前状态 */
@@ -116,9 +120,6 @@ typedef struct {
 
 /* 初始化角色卡 */
 void cc_init(CharacterCard *card, EntityType type);
-
-/* 实体类型名 */
-const char *entity_type_str(EntityType t);
 
 /* 设置基础属性 */
 void cc_set_attributes(CharacterCard *card, int appearance, int constitution, int intelligence);
@@ -138,20 +139,11 @@ void cc_change_money(CharacterCard *card, int delta);
 /* 添加人物关系 */
 bool cc_add_relation(CharacterCard *card, const char *target, RelationType type, int affinity);
 
-/* 移除人物关系 */
-bool cc_remove_relation(CharacterCard *card, const char *target);
-
 /* 修改好感度 */
 bool cc_set_affinity(CharacterCard *card, const char *target, int delta);
 
 /* 关系类型名 */
 const char *relation_type_str(RelationType t);
-
-/* 应用AI返回的变量变更。
-   @deprecated Use rule_engine_apply_changes() from rule.h instead.
-   This function is retained for backward compatibility but new code
-   should route all changes through the Rule Engine (Phase 1+). */
-void cc_apply_changes(CharacterCard *card, const char *changes);
 
 /* 导出角色卡状态为可读字符串。is_player=true 时跳过性格字段 */
 int cc_export_state(const CharacterCard *card, char *out, int out_size, bool is_player);
@@ -164,8 +156,5 @@ void cc_touch_interaction(CharacterCard *card, const GameTime *now);
 
 /* 清理过期NPC：好感度<30且超过6个月(180天)未互动则返回true */
 bool cc_is_stale_npc(const CharacterCard *card, const GameTime *now);
-
-/* 打印角色卡信息 */
-void cc_print(const CharacterCard *card);
 
 #endif

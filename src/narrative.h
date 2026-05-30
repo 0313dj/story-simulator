@@ -87,10 +87,6 @@ void nt_init(NarrativeText *nt);
    Returns a statically-allocated string (do not free). */
 const char *narrative_get_system_prompt(void);
 
-/* Get a shorter System Prompt variant for refinement calls.
-   Used when narrative text already exists but needs polishing. */
-const char *narrative_get_refinement_prompt(void);
-
 /* Get the style instruction string for a given style */
 const char *narrative_style_str(NarrativeStyle s);
 
@@ -103,11 +99,5 @@ const char *narrative_style_str(NarrativeStyle s);
 bool narrative_generate(ApiClient *api, const WorldResult *wr,
                          const char *game_state_snapshot,
                          NarrativeText *nt);
-
-/* Refine/rewrite existing narrative text.
-   Takes the current text + WorldResult and asks AI to improve it.
-   Returns true on success. */
-bool narrative_refine(ApiClient *api, const WorldResult *wr,
-                       const char *current_text, NarrativeText *nt);
 
 #endif

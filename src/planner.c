@@ -1,3 +1,4 @@
+#include "log.h"
 #include "planner.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -138,7 +139,7 @@ static void plan_parse_response(const char *raw, Plan *plan)
                             while (*act == ' ') act++;
                             char *act_end = act + strlen(act) - 1;
                             while (act_end > act && *act_end == ' ') *act_end-- = '\0';
-                            strncpy(step->action, act, PLAN_MAX_ACTION_LEN - 1);
+                            safe_strcpy(step->action, act, PLAN_MAX_ACTION_LEN);
 
                             char *tgt = sep1 + 1;
                             while (*tgt == ' ') tgt++;
@@ -147,10 +148,10 @@ static void plan_parse_response(const char *raw, Plan *plan)
                                 *sep2 = '\0';
                                 char *tgt_end = tgt + strlen(tgt) - 1;
                                 while (tgt_end > tgt && *tgt_end == ' ') *tgt_end-- = '\0';
-                                strncpy(step->target, tgt, PLAN_MAX_TARGET_LEN - 1);
+                                safe_strcpy(step->target, tgt, PLAN_MAX_TARGET_LEN);
                                 step->estimated_ticks = atoi(sep2 + 1);
                             } else {
-                                strncpy(step->target, tgt, PLAN_MAX_TARGET_LEN - 1);
+                                safe_strcpy(step->target, tgt, PLAN_MAX_TARGET_LEN);
                             }
                         } else if (arrow || cn_arrow) {
                             /* Format: action → target (约X分钟) or action -> target.
@@ -172,7 +173,7 @@ static void plan_parse_response(const char *raw, Plan *plan)
                             while (*act == ' ') act++;
                             char *act_end = act + strlen(act) - 1;
                             while (act_end > act && *act_end == ' ') *act_end-- = '\0';
-                            strncpy(step->action, act, PLAN_MAX_ACTION_LEN - 1);
+                            safe_strcpy(step->action, act, PLAN_MAX_ACTION_LEN);
 
                             char *tgt = arrow_pos + arrow_len;
                             while (*tgt == ' ') tgt++;
@@ -185,10 +186,10 @@ static void plan_parse_response(const char *raw, Plan *plan)
                             }
                             char *tgt_end = tgt + strlen(tgt) - 1;
                             while (tgt_end > tgt && *tgt_end == ' ') *tgt_end-- = '\0';
-                            strncpy(step->target, tgt, PLAN_MAX_TARGET_LEN - 1);
+                            safe_strcpy(step->target, tgt, PLAN_MAX_TARGET_LEN);
                         } else {
                             /* Plain text: use whole line as action */
-                            strncpy(step->action, line, PLAN_MAX_ACTION_LEN - 1);
+                            safe_strcpy(step->action, line, PLAN_MAX_ACTION_LEN);
                         }
 
                         if (step->action[0]) {
@@ -276,24 +277,11 @@ bool planner_generate(ApiClient *api, const char *user_input,
             intent_action_verb(intent ? intent->type : INTENT_UNKNOWN),
             target_str);
         if (intent && intent->target[0]) {
-            strncpy(step->target, intent->target, PLAN_MAX_TARGET_LEN - 1);
+            safe_strcpy(step->target, intent->target, PLAN_MAX_TARGET_LEN);
         }
         step->estimated_ticks = 5; /* default 5 minutes */
         plan->step_count = 1;
     }
 
     return plan->step_count > 0;
-}
-
-bool planner_generate_open(ApiClient *api, const char *user_input,
-                            const char *game_state, Plan *plan)
-{
-    /* For UNKNOWN intent — use a broader prompt */
-    IntentResult dummy_intent;
-    memset(&dummy_intent, 0, sizeof(dummy_intent));
-    dummy_intent.type = INTENT_UNKNOWN;
-    dummy_intent.confidence = 0.3f;
-    strncpy(dummy_intent.parameters, user_input, INTENT_MAX_PARAMS_LEN - 1);
-
-    return planner_generate(api, user_input, &dummy_intent, game_state, plan);
 }
