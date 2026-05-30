@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>模拟器</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div id="topbar">
+  <span id="logo">&#9823; 模拟器</span>
+  <div id="toolbar">
+    <button class="btn-icon" id="btn-theme" title="切换主题">&#x263E;</button>
+    <button class="btn-icon" id="btn-apimgr" title="API 管理">&#x2699;</button>
+    <button class="btn-icon" id="btn-savemgr" title="存档管理">&#x1F4C1;</button>
+    <button class="btn-icon" id="btn-debug" title="开发者模式">&#x1F50D;</button>
+  </div>
+</div>
+
+<!-- MAIN LAYOUT -->
+<div id="main">
+
+  <!-- LEFT PANEL: Character Card -->
+  <div id="panel-left" class="card">
+
+    <div class="char-header">
+      <div class="avatar" id="avatar">&#x1F464;</div>
+      <div class="char-basic">
+        <div class="char-name" id="char-name">---</div>
+        <div class="char-age">年龄 <span id="char-age">--</span></div>
+      </div>
+    </div>
+
+    <div class="char-status-row">
+      <span class="status-dot" id="status-dot">&#x25CF;</span>
+      <span class="status-text" id="status-text">正常</span>
+      <span class="money-text" id="money-text">0 G</span>
+    </div>
+
+    <div class="attr-section">
+      <div class="section-label">属性</div>
+      <div class="attr-bar" id="attr-app">
+        <div class="attr-fill attr-fill-blue"></div>
+        <span class="attr-label">颜值</span>
+        <span class="attr-val">0/100</span>
+      </div>
+      <div class="attr-bar" id="attr-con">
+        <div class="attr-fill attr-fill-blue"></div>
+        <span class="attr-label">体质</span>
+        <span class="attr-val">0/100</span>
+      </div>
+      <div class="attr-bar" id="attr-int">
+        <div class="attr-fill attr-fill-blue"></div>
+        <span class="attr-label">智力</span>
+        <span class="attr-val">0/100</span>
+      </div>
+    </div>
+
+    <div class="detail-btns">
+      <button class="btn btn-secondary" id="btn-skills">技能 (0)</button>
+      <button class="btn btn-secondary" id="btn-items">持有物 (0)</button>
+      <button class="btn btn-secondary" id="btn-relations">关系 (0)</button>
+      <button class="btn btn-secondary" id="btn-map">地图</button>
+      <button class="btn btn-secondary" id="btn-npc">NPC (0)</button>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="action-btns">
+      <button class="btn btn-primary" id="btn-save">存档</button>
+      <button class="btn btn-secondary" id="btn-load">读档</button>
+      <button class="btn btn-secondary" id="btn-new">新建</button>
+    </div>
+
+  </div>
+
+  <!-- RIGHT PANEL -->
+  <div id="panel-right">
+
+    <!-- Environment Card -->
+    <div id="env-card" class="card">
+      <div class="env-row">
+        <span class="env-label">时代</span>
+        <span class="env-value" id="env-era">---</span>
+        <span class="env-label" style="margin-left:24px">天气</span>
+        <span class="weather-icon" id="weather-icon">&#x2600;</span>
+        <span class="env-value" id="env-weather">---</span>
+      </div>
+      <div class="env-row">
+        <span class="env-label">时间</span>
+        <span class="env-value" id="env-time">---</span>
+      </div>
+      <div class="env-row">
+        <span class="env-label">地点</span>
+        <span class="env-value breadcrumb" id="env-location">--- / --- / ---</span>
+      </div>
+    </div>
+
+    <!-- Chat Area -->
+    <div id="chat-label">&#x1F4AC; 对话记录</div>
+    <div id="chat-area">
+      <div id="chat-messages"></div>
+    </div>
+
+    <!-- Input Area -->
+    <div id="input-area">
+      <input type="text" id="input-field" placeholder="输入指令..." autofocus>
+      <button class="btn btn-primary" id="btn-send">发送</button>
+    </div>
+
+    <!-- Developer Mode Debug Panel -->
+    <div id="debug-panel" class="hidden">
+      <div id="debug-header">
+        <span id="debug-title">&#x1F50D; Developer Mode — 管道追踪</span>
+        <button class="btn-icon" id="debug-close">&times;</button>
+      </div>
+      <div id="debug-body"></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- MODALS -->
+<div id="modal-overlay" class="hidden">
+  <div id="modal-box" class="card">
+    <div id="modal-header">
+      <span id="modal-title"></span>
+      <button class="btn-icon" id="modal-close">&times;</button>
+    </div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>

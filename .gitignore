@@ -1,0 +1,14 @@
+# Build artifacts
+src/*.o
+bin/sim.exe
+
+# Sensitive / runtime-generated
+bin/secrets.dat
+saves/
+
+# Editor / OS files
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
