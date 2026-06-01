@@ -1,5 +1,6 @@
 CC      = gcc
-CFLAGS  = -Wall -Wextra -std=c11 -O2 -fexec-charset=UTF-8
+CFLAGS  = -Wall -Wextra -std=c11 -O2 -fexec-charset=UTF-8 \
+          -Icore -Iworld -Inpc -Iai -Isimulation -Ievents
 LDFLAGS = -lcurl -lws2_32
 
 UNAME_S := $(shell uname -s 2>/dev/null || echo Windows)
@@ -10,7 +11,15 @@ ifeq ($(findstring MINGW,$(UNAME_S)),MINGW)
     LDFLAGS += -lws2_32 -lwldap32 -lbcrypt -lcrypt32
 endif
 
-SRCS   = main.c httpd.c backend.c json.c log.c character_card.c environment.c memory.c api.c map.c npc.c crypto.c worldstate.c event.c rule.c changeset.c intent.c planner.c narrative.c npc_brain.c economy_sim.c faction_sim.c weather_sim.c population_sim.c world_director.c
+SRCS   = core/main.c \
+         core/httpd.c core/backend.c core/json.c core/log.c \
+         core/api.c core/crypto.c \
+         world/map.c world/environment.c world/worldstate.c world/world_director.c \
+         npc/character_card.c npc/memory.c npc/npc.c npc/npc_brain.c \
+         ai/intent.c ai/planner.c ai/narrative.c \
+         simulation/economy_sim.c simulation/faction_sim.c \
+         simulation/population_sim.c simulation/weather_sim.c \
+         events/event.c events/rule.c events/changeset.c
 OBJS   = $(SRCS:.c=.o)
 OUTDIR = ../bin
 TARGET = $(OUTDIR)/sim.exe
@@ -30,7 +39,7 @@ $(OUTDIR):
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f *.o
+	rm -f core/*.o world/*.o npc/*.o ai/*.o simulation/*.o events/*.o
 	rm -f $(TARGET)
 
 run: $(TARGET)

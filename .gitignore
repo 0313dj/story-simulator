@@ -1,5 +1,5 @@
 # Build artifacts
-src/*.o
+src/**/*.o
 bin/sim.exe
 bin/sim.log
 bin/saves/
