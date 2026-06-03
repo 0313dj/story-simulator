@@ -1,4 +1,6 @@
 #include "json.h"
+#include "log.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,9 +59,20 @@ void jb_str(JsonBuf *j, const char *s)
 void jb_esc(JsonBuf *j, const char *s)
 {
     if (!j->buf) return;
+    /* NULL-safe: treat NULL string as empty (prevents Access Violation
+       when callers pass uninitialized string fields). */
+    if (!s) s = "";
     /* Worst-case: every byte is a control char → \\u00XX (6 bytes).
-       Use 6x + 2 (quotes) + 1 (null) to avoid repeated reallocations. */
-    ensure(j, (int)strlen(s) * 6 + 4);
+       Use 6x + 2 (quotes) + 1 (null) to avoid repeated reallocations.
+       Guard against integer overflow on very long strings. */
+    {
+        size_t slen = strlen(s);
+        if (slen > (SIZE_MAX - 4) / 6) {
+            LOG_W("jb_esc: string too large (%zu bytes), clamping", slen);
+            slen = (SIZE_MAX - 4) / 6;
+        }
+        ensure(j, (int)(slen * 6 + 4));
+    }
     if (!j->buf) return;
     j->buf[j->len++] = '"';
     for (const char *p = s; *p; p++) {
@@ -118,6 +131,10 @@ void jb_arr_close(JsonBuf *j) { jb_str(j, "]"); }
 
 void jb_kv_str(JsonBuf *j, const char *key, const char *val)
 {
+    /* NULL-safe: key is typically a string literal but guard anyway;
+       val can be NULL when struct fields are uninitialized. */
+    if (!key) key = "";
+    if (!val) val = "";
     if (j->buf[j->len - 1] != '{' && j->buf[j->len - 1] != '[')
         jb_str(j, ",");
     jb_esc(j, key);
@@ -186,9 +203,28 @@ static const char *js_find(const char *json, const char *key)
 
 bool json_get_str(const char *json, const char *key, char *out, int out_sz)
 {
+    if (!json || !key || !out || out_sz <= 0) {
+        if (out && out_sz > 0) out[0] = '\0';
+        return false;
+    }
+
     const char *p = js_find(json, key);
     if (!p) { out[0] = '\0'; return false; }
-    p += (int)strlen(key) + 4;   /* "key":" */
+
+    /* Validate that the key is followed by ":" — prevents reading
+       past valid data if js_find returned an incomplete match.
+       p points at the OPENING quote:  "key":
+       So closing quote is at p[key_len+1], colon at p[key_len+2]. */
+    int key_len = (int)strlen(key);
+    if (p[key_len + 1] != '"' || p[key_len + 2] != ':') {
+        out[0] = '\0';
+        return false;
+    }
+
+    p += key_len + 3;   /* skip past "key": */
+    while (*p == ' ' || *p == '\t') p++;  /* skip optional whitespace */
+    if (*p != '"') { out[0] = '\0'; return false; }
+    p++;  /* skip opening quote of value */
     int i = 0;
     /* Bug #30: handle escaped double-quotes (\") in JSON strings */
     while (*p && i < out_sz - 1) {
@@ -221,7 +257,8 @@ bool json_get_int(const char *json, const char *key, int *dest)
 {
     const char *p = js_find(json, key);
     if (!p) return false;
-    p += (int)strlen(key) + 3;   /* "key": */
+    p += (int)strlen(key) + 3;   /* skip past "key": */
+    while (*p == ' ' || *p == '\t') p++;  /* skip optional whitespace (Bug #24) */
     *dest = atoi(p);
     return true;
 }

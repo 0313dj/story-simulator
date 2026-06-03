@@ -1,5 +1,6 @@
 #include "httpd.h"
 #include "backend.h"
+#include "json.h"
 #include "log.h"
 #include <winsock2.h>
 #include <windows.h>
@@ -50,7 +51,7 @@ static const char *mime_type(const char *path)
 /* ── Serve a static file ── */
 static void serve_file(SOCKET client, const char *path)
 {
-    log_info("HTTP serve: %s", path);
+    /* Per-file serving is too noisy for INFO; keep as DEBUG */
     /* Security: prevent directory traversal */
     /* Bug #26: decode path first, then check for traversal attempts */
     {
@@ -58,7 +59,7 @@ static void serve_file(SOCKET client, const char *path)
         urldecode(decoded_path, path);
         if (strstr(decoded_path, "..") || strstr(decoded_path, "//") ||
             strstr(decoded_path, "\\\\") || strstr(decoded_path, "\\")) {
-            log_warn("HTTP 403: path traversal attempt: %s", path);
+            LOG_W("HTTP 403: path traversal attempt: %s", path);
             const char *msg = "HTTP/1.1 403 Forbidden\r\n\r\nForbidden";
             send_all(client, msg, (int)strlen(msg));
             return;
@@ -77,7 +78,7 @@ static void serve_file(SOCKET client, const char *path)
 
     FILE *fp = fopen(full, "rb");
     if (!fp) {
-        log_warn("HTTP 404: %s", full);
+        LOG_W("HTTP 404: %s", full);
         const char *msg = "HTTP/1.1 404 Not Found\r\n\r\nNot Found";
         send_all(client, msg, (int)strlen(msg));
         return;
@@ -122,68 +123,8 @@ static void serve_file(SOCKET client, const char *path)
     fclose(fp);
 }
 
-/* ── JSON field extraction helper ── */
-static void json_get_str(const char *json, const char *key,
-                         char *out, int out_sz)
-{
-    /* Bug #5 fix: ensure key match is at a real JSON key position */
-    const char *p = json;
-    while ((p = strstr(p, key)) != NULL) {
-        /* Check: character after the key match must be '"' : or whitespace then ':' */
-        const char *after = p + strlen(key);
-        if (*after == '"' || *after == ':' ||
-            (*after == ' ' && after[1] == ':') ||
-            (*after == '\t' && after[1] == ':')) {
-            /* Check: character before must be valid JSON key boundary */
-            if (p == json || (p[-1] == '{' || p[-1] == ',' || p[-1] == '[' ||
-                              p[-1] == ' ' || p[-1] == '\n' || p[-1] == '\r' || p[-1] == '\t')) {
-                break; /* found a valid key match */
-            }
-        }
-        p++; /* skip past false match */
-    }
-    if (!p) { out[0] = '\0'; return; }
-    p = strchr(p, ':');
-    if (!p) { out[0] = '\0'; return; }
-    p = strchr(p, '"');
-    if (!p) { out[0] = '\0'; return; }
-    p++;
-    int i = 0;
-    while (*p && *p != '"' && i < out_sz - 1) {
-        if (*p == '\\' && p[1]) {
-            switch (p[1]) {
-            case '"':  out[i++] = '"';  p += 2; break;
-            case '\\': out[i++] = '\\'; p += 2; break;
-            case '/':  out[i++] = '/';  p += 2; break;
-            case 'n':  out[i++] = '\n'; p += 2; break;
-            case 'r':  out[i++] = '\r'; p += 2; break;
-            case 't':  out[i++] = '\t'; p += 2; break;
-            case 'b':  out[i++] = '\b'; p += 2; break;
-            case 'f':  out[i++] = '\f'; p += 2; break;
-            case 'u':
-                /* Bug #24: handle \uXXXX unicode escapes (greedy decode) */
-                if (p[2] && p[3] && p[4] && p[5]) {
-                    unsigned int cp = 0;
-                    for (int k = 2; k <= 5; k++) {
-                        char h = p[k];
-                        cp <<= 4;
-                        if      (h >= '0' && h <= '9') cp |= (h - '0');
-                        else if (h >= 'a' && h <= 'f') cp |= (h - 'a' + 10);
-                        else if (h >= 'A' && h <= 'F') cp |= (h - 'A' + 10);
-                        else { cp = 0xFFFFFFFF; break; }
-                    }
-                    if (cp < 0x80 && i < out_sz - 1) { out[i++] = (char)cp; }
-                    p += 6;
-                } else { out[i++] = *p++; }
-                break;
-            default:  out[i++] = *p++; break;
-            }
-        } else {
-            out[i++] = *p++;
-        }
-    }
-    out[i] = '\0';
-}
+/* JSON field extraction now uses the shared json.c implementation (fixes Bug #22).
+   Callers must pass plain key names (without surrounding quotes). */
 
 /* ── Reliable send: loops until all bytes sent or connection fails ── */
 /* Bug #25 fix: handle partial send() by looping */
@@ -202,16 +143,55 @@ static bool send_all(SOCKET client, const char *data, int len)
 static void handle_api(SOCKET client, const char *headers, const char *body, int body_len)
 {
     (void)headers;
-    (void)body_len;
     const char *json = body;
 
+    /* Log request body with API key redacted.
+       Never log raw bodies — they may contain "api_key":"sk-..." */
+    if (body && body[0]) {
+        char safe[512];
+        int si = 0, bi = 0;
+        while (bi < body_len && si < (int)sizeof(safe) - 1) {
+            /* Redact "api_key":"<value>" → "api_key":"***" */
+            if (strncmp(body + bi, "\"api_key\"", 9) == 0 ||
+                strncmp(body + bi, "\"apiKey\"", 8) == 0 ||
+                strncmp(body + bi, "\"key\"", 5) == 0) {
+                const char *colon = strchr(body + bi, ':');
+                if (colon) {
+                    int prefix_len = (int)(colon - (body + bi)) + 1;
+                    if (si + prefix_len + 5 < (int)sizeof(safe)) {
+                        memcpy(safe + si, body + bi, prefix_len);
+                        si += prefix_len;
+                        memcpy(safe + si, "\"***\"", 5);
+                        si += 5;
+                    }
+                    /* Skip to after the value's closing quote */
+                    const char *v = colon + 1;
+                    while (*v == ' ' || *v == '\t') v++;
+                    if (*v == '"') {
+                        v++;
+                        while (*v && *v != '"') v++;
+                        if (*v == '"') v++;
+                    }
+                    bi = (int)(v - body);
+                    continue;
+                }
+            }
+            safe[si++] = body[bi++];
+        }
+        safe[si] = '\0';
+        LOG_D("HTTP BODY=%.500s", safe);
+    } else {
+        LOG_D("HTTP BODY=(empty)");
+    }
+
     char cmd[64] = {0};
-    json_get_str(json, "\"cmd\"", cmd, sizeof(cmd));
+    json_get_str(json, "cmd", cmd, sizeof(cmd));
+    LOG_I("json_get_str cmd=[%s]", cmd);
 
     if (!cmd[0]) {
-        log_warn("HTTP API: missing cmd field");
+        LOG_W("HTTP API: missing cmd field");
     } else {
-        log_info("HTTP API cmd=%s (body=%d bytes)", cmd, body_len);
+        LOG_I("HTTP API cmd=%s (body=%d bytes)", cmd, body_len);
     }
 
     char text[4096] = {0};
@@ -224,7 +204,7 @@ static void handle_api(SOCKET client, const char *headers, const char *body, int
     } else if (strcmp(cmd, "get_chat_history") == 0) {
         result = backend_get_chat_history();
     } else if (strcmp(cmd, "send_message") == 0) {
-        json_get_str(json, "\"text\"", text, sizeof(text));
+        json_get_str(json, "text", text, sizeof(text));
         result = backend_send_message(text);
     } else if (strcmp(cmd, "quick_save") == 0) {
         result = backend_quick_save();
@@ -233,10 +213,10 @@ static void handle_api(SOCKET client, const char *headers, const char *body, int
     } else if (strcmp(cmd, "list_saves") == 0) {
         result = backend_list_saves();
     } else if (strcmp(cmd, "load_save") == 0) {
-        json_get_str(json, "\"filename\"", fname, sizeof(fname));
+        json_get_str(json, "filename", fname, sizeof(fname));
         result = backend_load_save(fname);
     } else if (strcmp(cmd, "delete_save") == 0) {
-        json_get_str(json, "\"filename\"", fname, sizeof(fname));
+        json_get_str(json, "filename", fname, sizeof(fname));
         result = backend_delete_save(fname);
     } else if (strcmp(cmd, "get_api_status") == 0) {
         result = backend_get_api_status();
@@ -244,58 +224,58 @@ static void handle_api(SOCKET client, const char *headers, const char *body, int
         result = backend_get_profiles();
     } else if (strcmp(cmd, "save_profile") == 0) {
         char nm[64]={0}, ep[256]={0}, ky[256]={0}, md[64]={0};
-        json_get_str(json, "\"name\"", nm, sizeof(nm));
-        json_get_str(json, "\"endpoint\"", ep, sizeof(ep));
-        json_get_str(json, "\"apiKey\"", ky, sizeof(ky));
-        json_get_str(json, "\"model\"", md, sizeof(md));
+        json_get_str(json, "name", nm, sizeof(nm));
+        json_get_str(json, "endpoint", ep, sizeof(ep));
+        json_get_str(json, "apiKey", ky, sizeof(ky));
+        json_get_str(json, "model", md, sizeof(md));
         result = backend_save_profile(nm, ep, ky, md);
     } else if (strcmp(cmd, "delete_profile") == 0) {
         char nm[64] = {0};
-        json_get_str(json, "\"name\"", nm, sizeof(nm));
+        json_get_str(json, "name", nm, sizeof(nm));
         result = backend_delete_profile(nm);
     } else if (strcmp(cmd, "activate_profile") == 0) {
         char nm[64] = {0};
-        json_get_str(json, "\"name\"", nm, sizeof(nm));
+        json_get_str(json, "name", nm, sizeof(nm));
         result = backend_activate_profile(nm);
     } else if (strcmp(cmd, "create_world") == 0) {
         char nm[64]={0}, ag[8]={0}, gd[8]={0}, cl[128]={0}, mn[16]={0};
         char ap[8]={0}, co[8]={0}, in[8]={0}, sk[512]={0}, it[512]={0}, st[2048]={0};
-        json_get_str(json, "\"name\"", nm, sizeof(nm));
-        json_get_str(json, "\"age\"", ag, sizeof(ag));
-        json_get_str(json, "\"gender\"", gd, sizeof(gd));
-        json_get_str(json, "\"clothing\"", cl, sizeof(cl));
-        json_get_str(json, "\"money\"", mn, sizeof(mn));
-        json_get_str(json, "\"appearance\"", ap, sizeof(ap));
-        json_get_str(json, "\"constitution\"", co, sizeof(co));
-        json_get_str(json, "\"intelligence\"", in, sizeof(in));
-        json_get_str(json, "\"skills\"", sk, sizeof(sk));
-        json_get_str(json, "\"items\"", it, sizeof(it));
-        json_get_str(json, "\"story\"", st, sizeof(st));
+        json_get_str(json, "name", nm, sizeof(nm));
+        json_get_str(json, "age", ag, sizeof(ag));
+        json_get_str(json, "gender", gd, sizeof(gd));
+        json_get_str(json, "clothing", cl, sizeof(cl));
+        json_get_str(json, "money", mn, sizeof(mn));
+        json_get_str(json, "appearance", ap, sizeof(ap));
+        json_get_str(json, "constitution", co, sizeof(co));
+        json_get_str(json, "intelligence", in, sizeof(in));
+        json_get_str(json, "skills", sk, sizeof(sk));
+        json_get_str(json, "items", it, sizeof(it));
+        json_get_str(json, "story", st, sizeof(st));
         result = backend_create_world(nm, ag, gd, cl, mn, ap, co, in, sk, it, st);
     } else if (strcmp(cmd, "delete_location") == 0) {
         char lvl[8] = {0}, lname[128] = {0};
-        json_get_str(json, "\"level\"", lvl, sizeof(lvl));
-        json_get_str(json, "\"name\"", lname, sizeof(lname));
-        log_info("HTTP API: delete_location level=%s name=%s", lvl, lname);
+        json_get_str(json, "level", lvl, sizeof(lvl));
+        json_get_str(json, "name", lname, sizeof(lname));
+        LOG_I("HTTP API: delete_location level=%s name=%s", lvl, lname);
         result = backend_delete_location(lvl, lname);
     } else if (strcmp(cmd, "rename_location") == 0) {
         char lvl[8] = {0}, old_name[128] = {0}, new_name[128] = {0};
-        json_get_str(json, "\"level\"", lvl, sizeof(lvl));
-        json_get_str(json, "\"oldName\"", old_name, sizeof(old_name));
-        json_get_str(json, "\"newName\"", new_name, sizeof(new_name));
-        log_info("HTTP API: rename_location level=%s '%s' → '%s'", lvl, old_name, new_name);
+        json_get_str(json, "level", lvl, sizeof(lvl));
+        json_get_str(json, "oldName", old_name, sizeof(old_name));
+        json_get_str(json, "newName", new_name, sizeof(new_name));
+        LOG_I("HTTP API: rename_location level=%s '%s' → '%s'", lvl, old_name, new_name);
         result = backend_rename_location(lvl, old_name, new_name);
     } else if (strcmp(cmd, "travel") == 0) {
         char fr[64]={0}, to[64]={0}, meth[64]={0};
         double dist = 0;
-        json_get_str(json, "\"from\"", fr, sizeof(fr));
-        json_get_str(json, "\"to\"", to, sizeof(to));
-        json_get_str(json, "\"method\"", meth, sizeof(meth));
+        json_get_str(json, "from", fr, sizeof(fr));
+        json_get_str(json, "to", to, sizeof(to));
+        json_get_str(json, "method", meth, sizeof(meth));
         const char *dp = strstr(json, "\"distance\"");
         if (dp) { dp = strchr(dp, ':'); if (dp) dist = atof(dp+1); }
         result = backend_travel(fr, to, dist, meth);
     } else {
-        log_warn("HTTP API: unknown cmd=%.32s", cmd);
+        LOG_W("HTTP API: unknown cmd=%.32s", cmd);
         /* Bug #25: use static buffer instead of malloc (avoids leak concern) */
         static const char err_unknown[] = "{\"ok\":false,\"error\":\"未知命令\"}";
         char header[256];
@@ -313,7 +293,7 @@ static void handle_api(SOCKET client, const char *headers, const char *body, int
 
     if (result) {
         int result_len = (int)strlen(result);
-        log_info("HTTP API: cmd=%s -> OK (%d bytes)", cmd, result_len);
+        LOG_D("HTTP API: cmd=%s -> OK (%d bytes)", cmd, result_len);
         char header[256];
         snprintf(header, sizeof(header),
             "HTTP/1.1 200 OK\r\n"
@@ -327,7 +307,7 @@ static void handle_api(SOCKET client, const char *headers, const char *body, int
         free(result);
     } else {
         /* Bug #1 fix: backend function returned NULL — send 500 error */
-        log_error("HTTP API: cmd=%s -> NULL (backend returned nothing)", cmd);
+        LOG_E("HTTP API: cmd=%s -> NULL (backend returned nothing)", cmd);
         const char *err_body = "{\"ok\":false,\"error\":\"内部服务器错误\"}";
         char header[256];
         snprintf(header, sizeof(header),
@@ -385,6 +365,14 @@ static DWORD WINAPI handle_client(LPVOID param)
 {
     SOCKET client = (SOCKET)(INT_PTR)param;
 
+    /* Bug #23: set socket receive timeout to prevent hanging when
+       Content-Length exceeds actual data. */
+    {
+        DWORD timeout_ms = 5000; /* 5 seconds */
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
+                   (const char *)&timeout_ms, sizeof(timeout_ms));
+    }
+
     /* Read headers first (up to 16KB, enough for any sane request) */
     char hdr_buf[16384];
     int total = 0;
@@ -399,7 +387,7 @@ static DWORD WINAPI handle_client(LPVOID param)
     }
     /* Bug #27: detect header truncation */
     if (total >= (int)sizeof(hdr_buf) - 1 && !strstr(hdr_buf, "\r\n\r\n")) {
-        log_warn("HTTP 431: header too large (%d bytes)", total);
+        LOG_W("HTTP 431: header too large (%d bytes)", total);
         const char *msg = "HTTP/1.1 431 Request Header Fields Too Large\r\n\r\nHeader too large";
         send_all(client, msg, (int)strlen(msg));
         closesocket(client);
@@ -411,7 +399,7 @@ static DWORD WINAPI handle_client(LPVOID param)
     if (parse_request_line(hdr_buf, method, sizeof(method),
                            path, sizeof(path)) != 0 ||
         method[0] == '\0' || path[0] == '\0') {
-        log_warn("HTTP 400: bad request line");
+        LOG_W("HTTP 400: bad request line");
         const char *msg = "HTTP/1.1 400 Bad Request\r\n\r\n";
         send_all(client, msg, (int)strlen(msg));
         closesocket(client);
@@ -420,13 +408,14 @@ static DWORD WINAPI handle_client(LPVOID param)
 
     urldecode(path, path);
 
-    log_info("HTTP %s %s", method, path);
+    LOG_D("HTTP %s %s", method, path);
 
     if (strcmp(method, "POST") == 0 && strcmp(path, "/api") == 0) {
         /* Read body based on Content-Length */
         int cl = get_content_length(hdr_buf);
-        if (cl <= 0 || cl > 1024*1024) { /* max 1MB */
-            log_warn("HTTP 400: invalid Content-Length=%d", cl);
+        /* Bug #23: cap at 64KB — API requests should never be larger */
+        if (cl <= 0 || cl > 65536) {
+            LOG_W("HTTP 400: invalid Content-Length=%d", cl);
             const char *msg = "HTTP/1.1 400 Bad Request\r\n\r\nInvalid Content-Length";
             send_all(client, msg, (int)strlen(msg));
             closesocket(client);
@@ -435,38 +424,37 @@ static DWORD WINAPI handle_client(LPVOID param)
 
         char *body = (char *)malloc(cl + 1);
         if (!body) {
-            log_error("HTTP: malloc(%d) failed for request body", cl + 1);
+            LOG_E("HTTP: malloc(%d) failed for request body", cl + 1);
             closesocket(client); return 0;
         }
 
         /* Check if body data already came with headers */
         const char *body_start = strstr(hdr_buf, "\r\n\r\n");
+        int already = 0;
         if (body_start) {
             body_start += 4;
-            int already = total - (int)(body_start - hdr_buf);
-            /* Bug #28: clamp already to valid range and use unsigned math */
+            already = total - (int)(body_start - hdr_buf);
             if (already < 0) already = 0;
             if (already > cl) already = cl;
             if (already > 0) memcpy(body, body_start, (size_t)already);
-            int remaining = cl - already;
-            if (remaining < 0) remaining = 0;
-            if (remaining > 0) {
-                int r = recv(client, body + already, remaining, 0);
-                if (r != remaining) {
-                    log_warn("HTTP: body read mismatch (got %d, expected %d)", r, remaining);
-                    free(body); closesocket(client); return 0;
-                }
-            }
-        } else {
-            int r = recv(client, body, cl, 0);
-            if (r != cl) {
-                log_warn("HTTP: body read mismatch (got %d, expected %d)", r, cl);
-                free(body); closesocket(client); return 0;
-            }
         }
-        body[cl] = '\0';
 
-        handle_api(client, hdr_buf, body, cl);
+        /* Bug #23: read remaining body in a loop with timeout tolerance.
+           If Content-Length exceeds actual data, the recv timeout
+           will cause partial reads — we accept whatever we get. */
+        int received = already;
+        while (received < cl) {
+            int n = recv(client, body + received, cl - received, 0);
+            if (n <= 0) break;  /* timeout or connection closed */
+            received += n;
+        }
+        if (received < cl) {
+            LOG_W("HTTP: body short read (got %d, expected %d) — using partial",
+                     received, cl);
+        }
+        body[received] = '\0';
+
+        handle_api(client, hdr_buf, body, received);
         free(body);
     } else if (strcmp(method, "OPTIONS") == 0) {
         const char *resp = "HTTP/1.1 200 OK\r\n"
@@ -478,7 +466,7 @@ static DWORD WINAPI handle_client(LPVOID param)
     } else if (strcmp(method, "GET") == 0) {
         serve_file(client, path);
     } else {
-        log_warn("HTTP 405: method=%s", method);
+        LOG_W("HTTP 405: method=%s", method);
         const char *msg = "HTTP/1.1 405 Method Not Allowed\r\n\r\n";
         send_all(client, msg, (int)strlen(msg));
     }
@@ -520,6 +508,7 @@ int httpd_start(int port)
     addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
     if (bind(g_listen, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        LOG_E("HTTP server: bind failed on 127.0.0.1:%d", port);
         closesocket(g_listen);
         WSACleanup();
         return -1;
@@ -538,25 +527,25 @@ int httpd_start(int port)
     if (slash) *slash = '\0';
     snprintf(g_web_root, sizeof(g_web_root), "%s\\web", exe_dir);
 
-    log_info("HTTP server: web_root=%s", g_web_root);
+    LOG_I("HTTP server: web_root=%s", g_web_root);
 
     g_running = 1;
     CreateThread(NULL, 0, accept_thread, NULL, 0, NULL);
 
-    log_info("HTTP server: listening on 127.0.0.1:%d", port);
+    LOG_I("HTTP server: listening on 127.0.0.1:%d", port);
     return 0;
 }
 
 void httpd_stop(void)
 {
-    log_info("HTTP server: stopping...");
+    LOG_I("HTTP server: stopping...");
     g_running = 0;
     if (g_listen != INVALID_SOCKET) {
         closesocket(g_listen);
         g_listen = INVALID_SOCKET;
     }
     WSACleanup();
-    log_info("HTTP server: stopped");
+    LOG_I("HTTP server: stopped");
 }
 
 /* ── Entry-point helper: find free port and start server ── */
@@ -566,11 +555,11 @@ int httpd_autostart(void)
     /* Try ports 8765-8775 */
     for (int port = 8765; port <= 8775; port++) {
         if (httpd_start(port) == 0) {
-            log_info("HTTP autostart: bound to port %d", port);
+            LOG_I("HTTP autostart: bound to port %d", port);
             return port;
         }
-        log_warn("HTTP autostart: port %d unavailable, trying next...", port);
+        LOG_W("HTTP autostart: port %d unavailable, trying next...", port);
     }
-    log_error("HTTP autostart: all ports 8765-8775 are busy");
+    LOG_E("HTTP autostart: all ports 8765-8775 are busy");
     return -1;
 }

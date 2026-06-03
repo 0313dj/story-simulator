@@ -118,10 +118,19 @@ static void plan_parse_response(const char *raw, Plan *plan)
                         if (!line_end) line_end = p + strlen(p);
                         char line[256];
                         int line_len = (int)(line_end - p);
-                        if (line_len > (int)sizeof(line) - 1)
+                        if (line_len > (int)sizeof(line) - 1) {
+                            LOG_W("planner: step line truncated (%d bytes)", line_len);
                             line_len = sizeof(line) - 1;
-                        memcpy(line, p, line_len);
-                        line[line_len] = '\0';
+                        }
+                        /* Use safe_strcpy for UTF-8 boundary-aware truncation */
+                        {
+                            char src_copy[256];
+                            int src_len = line_len < (int)sizeof(src_copy) - 1
+                                          ? line_len : (int)sizeof(src_copy) - 1;
+                            memcpy(src_copy, p, src_len);
+                            src_copy[src_len] = '\0';
+                            safe_strcpy(line, src_copy, sizeof(line));
+                        }
 
                         /* Trim \r */
                         char *cr = strchr(line, '\r');
@@ -133,25 +142,44 @@ static void plan_parse_response(const char *raw, Plan *plan)
                         char *cn_arrow = strstr(line, "->");
 
                         if (sep1) {
-                            /* Format: action | target | minutes */
-                            *sep1 = '\0';
+                            /* Format: action | target | minutes
+                               Use memcpy-based extraction to avoid modifying the
+                               line buffer in-place (fixes Bug #4: UTF-8 safety). */
                             char *act = line;
                             while (*act == ' ') act++;
-                            char *act_end = act + strlen(act) - 1;
-                            while (act_end > act && *act_end == ' ') *act_end-- = '\0';
-                            safe_strcpy(step->action, act, PLAN_MAX_ACTION_LEN);
+                            char *act_end = sep1 - 1;
+                            while (act_end > act && *act_end == ' ') act_end--;
+                            {
+                                int act_len = (int)(act_end - act + 1);
+                                if (act_len >= PLAN_MAX_ACTION_LEN) act_len = PLAN_MAX_ACTION_LEN - 1;
+                                memcpy(step->action, act, act_len);
+                                step->action[act_len] = '\0';
+                            }
 
                             char *tgt = sep1 + 1;
                             while (*tgt == ' ') tgt++;
                             char *sep2 = strchr(tgt, '|');
                             if (sep2) {
-                                *sep2 = '\0';
-                                char *tgt_end = tgt + strlen(tgt) - 1;
-                                while (tgt_end > tgt && *tgt_end == ' ') *tgt_end-- = '\0';
-                                safe_strcpy(step->target, tgt, PLAN_MAX_TARGET_LEN);
+                                char *tgt_end = sep2 - 1;
+                                while (tgt_end > tgt && *tgt_end == ' ') tgt_end--;
+                                {
+                                    int tgt_len = (int)(tgt_end - tgt + 1);
+                                    if (tgt_len >= PLAN_MAX_TARGET_LEN) tgt_len = PLAN_MAX_TARGET_LEN - 1;
+                                    memcpy(step->target, tgt, tgt_len);
+                                    step->target[tgt_len] = '\0';
+                                }
                                 step->estimated_ticks = atoi(sep2 + 1);
                             } else {
-                                safe_strcpy(step->target, tgt, PLAN_MAX_TARGET_LEN);
+                                /* target goes to end of line (no minutes field) */
+                                char *tgt_end = line + strlen(line);
+                                while (tgt_end > tgt && (*(tgt_end - 1) == ' ' || *(tgt_end - 1) == '\r'))
+                                    tgt_end--;
+                                {
+                                    int tgt_len = (int)(tgt_end - tgt);
+                                    if (tgt_len >= PLAN_MAX_TARGET_LEN) tgt_len = PLAN_MAX_TARGET_LEN - 1;
+                                    memcpy(step->target, tgt, tgt_len);
+                                    step->target[tgt_len] = '\0';
+                                }
                             }
                         } else if (arrow || cn_arrow) {
                             /* Format: action → target (约X分钟) or action -> target.
@@ -177,9 +205,13 @@ static void plan_parse_response(const char *raw, Plan *plan)
 
                             char *tgt = arrow_pos + arrow_len;
                             while (*tgt == ' ') tgt++;
-                            /* Check for "(约X分钟)" suffix */
+                            /* Check for "(约X分钟)" suffix.
+                               Bug #5 fix: verify paren[-1] is whitespace before truncating.
+                               This prevents corrupting UTF-8 multi-byte characters or
+                               truncating valid target text. */
                             char *paren = strchr(tgt, '(');
-                            if (paren) {
+                            if (paren && paren > tgt &&
+                                (*(paren - 1) == ' ' || *(paren - 1) == '\t')) {
                                 *(paren - 1) = '\0'; /* trim space before paren */
                                 /* Extract minutes */
                                 sscanf(paren, "(%*[^0-9]%d", &step->estimated_ticks);

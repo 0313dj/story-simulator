@@ -1,4 +1,5 @@
 #include "memory.h"
+#include "log.h"
 #include <string.h>
 #include <stdbool.h>
 
@@ -33,10 +34,8 @@ bool mem_add(MemoryStore *store, const char *content,
     if (*count >= max) return false;
 
     MemoryEntry *e = &arr[*count];
-    strncpy(e->content, content, MAX_MEM_CONTENT - 1);
-    e->content[MAX_MEM_CONTENT - 1] = '\0';
-    strncpy(e->related_chars, related_chars, MAX_MEM_CHARS - 1);
-    e->related_chars[MAX_MEM_CHARS - 1] = '\0';
+    safe_strcpy(e->content, content, MAX_MEM_CONTENT);
+    safe_strcpy(e->related_chars, related_chars, MAX_MEM_CHARS);
     e->timestamp = *time;
     e->type = type;
     (*count)++;

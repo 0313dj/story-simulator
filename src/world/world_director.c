@@ -80,7 +80,7 @@ int wd_tick(WorldState *ws, EventLog *events, long long current_tick)
     {
         long long last = get_last_tick(ws, WD_VAR_LAST_WEATHER);
         if (current_tick - last >= WEATHER_TICK_INTERVAL) {
-            log_info("WD: weather tick (last=%lld, now=%lld)", last, current_tick);
+            LOG_I("WD: weather tick (last=%lld, now=%lld)", last, current_tick);
             weather_sim_tick(ws, events, current_tick);
             set_last_tick(ws, WD_VAR_LAST_WEATHER, current_tick);
             ran++;
@@ -91,7 +91,7 @@ int wd_tick(WorldState *ws, EventLog *events, long long current_tick)
     {
         long long last = get_last_tick(ws, WD_VAR_LAST_ECONOMY);
         if (current_tick - last >= ECON_TICK_INTERVAL) {
-            log_info("WD: economy tick (last=%lld, now=%lld)", last, current_tick);
+            LOG_I("WD: economy tick (last=%lld, now=%lld)", last, current_tick);
             econ_sim_tick(ws, events, current_tick);
             set_last_tick(ws, WD_VAR_LAST_ECONOMY, current_tick);
             ran++;
@@ -102,7 +102,7 @@ int wd_tick(WorldState *ws, EventLog *events, long long current_tick)
     {
         long long last = get_last_tick(ws, WD_VAR_LAST_FACTION);
         if (current_tick - last >= FACTION_TICK_INTERVAL) {
-            log_info("WD: faction tick (last=%lld, now=%lld)", last, current_tick);
+            LOG_I("WD: faction tick (last=%lld, now=%lld)", last, current_tick);
             faction_sim_tick(ws, events, current_tick);
             set_last_tick(ws, WD_VAR_LAST_FACTION, current_tick);
             ran++;
@@ -113,14 +113,14 @@ int wd_tick(WorldState *ws, EventLog *events, long long current_tick)
     {
         long long last = get_last_tick(ws, WD_VAR_LAST_POP);
         if (current_tick - last >= POP_TICK_INTERVAL) {
-            log_info("WD: population tick (last=%lld, now=%lld)", last, current_tick);
+            LOG_I("WD: population tick (last=%lld, now=%lld)", last, current_tick);
             pop_sim_tick(ws, events, current_tick);
             set_last_tick(ws, WD_VAR_LAST_POP, current_tick);
             ran++;
         }
     }
 
-    if (ran > 0) log_info("WD: tick complete — %d subsystem(s) ran", ran);
+    if (ran > 0) LOG_D("WD: tick complete — %d subsystem(s) ran", ran);
     return ran;
 }
 

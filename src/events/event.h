@@ -36,7 +36,7 @@ typedef struct {
    EventLog — append-only event queue
    ═══════════════════════════════════════════════════════════════ */
 
-typedef struct {
+typedef struct EventLog {
     Event events[MAX_EVENTS];
     int   count;
     int   next_id;

@@ -1,4 +1,5 @@
 #include "map.h"
+#include "log.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,9 +16,9 @@ void map_init(GameMap *map)
         map->parent_idx[i] = -1;
         map->selected[i]   = -1;
     }
-    strcpy(map->levels[2].level_name, "大地点");
-    strcpy(map->levels[1].level_name, "小地点");
-    strcpy(map->levels[0].level_name, "具体地点");
+    safe_strcpy(map->levels[2].level_name, "大地点", 32);
+    safe_strcpy(map->levels[1].level_name, "小地点", 32);
+    safe_strcpy(map->levels[0].level_name, "具体地点", 32);
 }
 
 bool map_locate(GameMap *map, const char *area, const char *district, const char *spot)
@@ -408,6 +409,16 @@ bool map_rename_point(GameMap *map, int level, const char *old_name, const char 
 
 int map_export_json(const GameMap *map, char *out, int out_size)
 {
+    /* Defensive: guard against NULL map, invalid buffer, and uninitialized
+       map (garbage count values). Without this, an uninitialized GameMap
+       causes buffer overflow or Access Violation. */
+    if (!map || !out || out_size <= 0) return 0;
+    for (int lv = 0; lv < 3; lv++) {
+        if (map->levels[lv].count < 0 || map->levels[lv].count > MAX_MAP_POINTS) {
+            return snprintf(out, out_size, "[]");
+        }
+    }
+
     int p = 0;
     p += snprintf(out + p, out_size - p, "[");
     for (int lv = 2; lv >= 0; lv--) {

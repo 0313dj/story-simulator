@@ -15,8 +15,8 @@ typedef struct {
 } ApiProfile;
 
 /* 多配置文件存取 */
-int  crypto_load_profiles(ApiProfile *out, int max_count);
-bool crypto_save_profiles(const ApiProfile *profiles, int count);
+int  crypto_load_profiles(const char *base_dir, ApiProfile *out, int max_count);
+bool crypto_save_profiles(const char *base_dir, const ApiProfile *profiles, int count);
 
 /* 加密字符串，返回 Base64 编码的密文（需 free） */
 char *crypto_encrypt(const char *plain);

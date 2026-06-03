@@ -61,12 +61,38 @@ function showNewWorld() {
   showModal('创建新世界', html, true);
 
   $('wc-create-btn').onclick = async () => {
+    /* ── Frontend validation ── */
+    const name = $('wc-name').value.trim();
+    if (!name) {
+      EventBus.emit('chat:add', { role: 'system', text: '请输入角色姓名' });
+      return;
+    }
+    const age = parseInt($('wc-age').value, 10);
+    if (isNaN(age) || age < 1 || age > 150) {
+      EventBus.emit('chat:add', { role: 'system', text: '年龄需为 1-150 之间的数字' });
+      return;
+    }
+    const money = parseInt($('wc-money').value, 10);
+    if (isNaN(money) || money < 0) {
+      EventBus.emit('chat:add', { role: 'system', text: '金钱需为非负整数' });
+      return;
+    }
+    const app = parseInt($('wc-app').value, 10);
+    const con = parseInt($('wc-con').value, 10);
+    const intel = parseInt($('wc-int').value, 10);
+    if (isNaN(app) || app < 0 || app > 100 ||
+        isNaN(con) || con < 0 || con > 100 ||
+        isNaN(intel) || intel < 0 || intel > 100) {
+      EventBus.emit('chat:add', { role: 'system', text: '颜值/体质/智力需为 0-100 之间的数字' });
+      return;
+    }
+
     $('wc-create-btn').innerHTML = '<span class="spinner"></span>AI 创建中...';
     $('wc-create-btn').disabled = true;
     const r = await createWorld({
-      name: $('wc-name').value, age: $('wc-age').value, gender: $('wc-gender').value,
-      clothing: $('wc-clothing').value, money: $('wc-money').value,
-      appearance: $('wc-app').value, constitution: $('wc-con').value, intelligence: $('wc-int').value,
+      name, age: String(age), gender: $('wc-gender').value,
+      clothing: $('wc-clothing').value.trim(), money: String(money),
+      appearance: String(app), constitution: String(con), intelligence: String(intel),
       skills: $('wc-skills').value, items: $('wc-items').value, story: $('wc-story').value
     });
     if (r.ok) {

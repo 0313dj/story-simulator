@@ -3,6 +3,8 @@
 
 #include <stdbool.h>
 #include "memory.h"
+#include "emotion.h"
+#include "typeid.h"
 
 /* Forward declaration for NPC autonomous behavior (Stage 3).
    Full definition in npc_brain.h — included by .c files that need it. */
@@ -95,7 +97,7 @@ typedef enum {
 } StatusType;
 
 /* 角色卡 */
-typedef struct {
+typedef struct CharacterCard {
     EntityType  entity_type;      /* 实体类型 */
     char        name[MAX_NAME_LEN];
     int         age;
@@ -115,7 +117,15 @@ typedef struct {
     int           player_affinity;                   /* 与玩家的好感度 -100~100 */
     GameTime      last_interaction;                  /* 上次与玩家互动的时间 */
     MemoryStore   memory;                            /* 记忆库 */
+    EmotionState  emotion;                           /* 情绪状态 (v2.0 Phase 2) */
     NpcBrain     *brain;                            /* NPC自主行为 (Stage 3), NULL for player */
+
+    /* ── Registry-based type references (Data-Driven Architecture v2) ──
+       These replace hardcoded enums. Set to TYPEID_NONE if unassigned.
+       Attributes for the referenced type are resolved via Registry lookup. */
+    TypeID        race_id;         /* e.g., typeid_from_string("race_human") */
+    TypeID        profession_id;   /* e.g., typeid_from_string("prof_student") */
+    TypeID        faction_id;      /* e.g., typeid_from_string("faction_none") */
 } CharacterCard;
 
 /* 初始化角色卡 */

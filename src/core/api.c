@@ -13,6 +13,30 @@ typedef struct {
     int   cap;
 } WriteCtx;
 
+/* ── Redact sensitive values from strings before logging ──
+   Returns a pointer to a static buffer (NOT thread-safe — caller must
+   use immediately). If redaction was applied, the sensitive substring
+   is replaced with "***". Otherwise returns the original string. */
+static const char *redact_for_log(const char *src, const char *secret)
+{
+    static char buf[1024];
+    if (!src || !secret || !secret[0]) return src ? src : "";
+    const char *found = strstr(src, secret);
+    if (!found) return src;
+    int pre_len = (int)(found - src);
+    int post_start = pre_len + (int)strlen(secret);
+    if (pre_len >= (int)sizeof(buf)) pre_len = (int)sizeof(buf) - 4;
+    memcpy(buf, src, pre_len);
+    int p = pre_len;
+    memcpy(buf + p, "***", 3); p += 3;
+    int remain = (int)strlen(src) - post_start;
+    if (p + remain >= (int)sizeof(buf)) remain = (int)sizeof(buf) - p - 1;
+    if (remain > 0) memcpy(buf + p, src + post_start, remain);
+    p += remain;
+    buf[p] = '\0';
+    return buf;
+}
+
 static size_t write_cb(void *ptr, size_t sz, size_t nmemb, void *ctx)
 {
     WriteCtx *w = (WriteCtx *)ctx;
@@ -72,9 +96,15 @@ static int extract_content(const char *json, char *out, int out_size)
     p = strchr(p, ':');
     if (!p) return 0;
     p++;
-    p = strchr(p, '"');
-    if (!p) return 0;
-    p++;
+    /* Skip whitespace between colon and value */
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    /* Guard: value must be a JSON string (starts with ").
+       null, numbers, booleans, objects, and arrays are not strings. */
+    if (*p != '"') {
+        if (out_size > 0) out[0] = '\0';
+        return 0;
+    }
+    p++;  /* skip the opening quote */
 
     int i = 0;
     while (*p && i < out_size - 1) {
@@ -92,7 +122,7 @@ static int extract_content(const char *json, char *out, int out_size)
         } else if (*p == '\0') {
             /* Skip embedded null bytes — some APIs (e.g. 通义千问)
                may inject \\u0000 or raw null bytes in the response. */
-            log_warn("API: null byte in content at offset %d, skipping", i);
+            LOG_W("API: null byte in content at offset %d, skipping", i);
             p++;
         } else {
             out[i++] = *p;
@@ -101,6 +131,15 @@ static int extract_content(const char *json, char *out, int out_size)
     }
     out[i] = '\0';
     return i;
+}
+
+/* Check if string ends with suffix */
+static int ends_with(const char *s, const char *suffix)
+{
+    size_t sl = strlen(s);
+    size_t tl = strlen(suffix);
+    if (sl < tl) return 0;
+    return strcmp(s + sl - tl, suffix) == 0;
 }
 
 /* Escape a string for inclusion in a JSON string value.
@@ -194,7 +233,7 @@ static void api_accumulate_tokens(ApiClient *api, const char *response_json)
         api->total_tokens             += total;
         api->api_call_count++;
 
-        log_info("API: tokens this call: prompt=%d completion=%d total=%d | "
+        LOG_D("API: tokens this call: prompt=%d completion=%d total=%d | "
                  "cumulative: prompt=%lld completion=%lld total=%lld (calls=%d)",
                  prompt, completion, total,
                  api->total_prompt_tokens, api->total_completion_tokens,
@@ -206,14 +245,14 @@ bool api_chat(ApiClient *api, const char *system_prompt,
               const char *user_prompt, char *out, int out_size,
               int max_tokens)
 {
-    log_info("API: chat request (model=%s, max_tokens=%d, out_buf=%d, "
+    LOG_D("API: chat request (model=%s, max_tokens=%d, out_buf=%d, "
              "sys_len=%d, usr_len=%d)",
              api->model, max_tokens, out_size,
              (int)strlen(system_prompt), (int)strlen(user_prompt));
     CURL *curl = curl_easy_init();
     if (!curl) {
         snprintf(api->last_error, sizeof(api->last_error), "curl_easy_init failed");
-        log_error("API: curl_easy_init failed");
+        LOG_E("API: curl_easy_init failed");
         return false;
     }
 
@@ -230,11 +269,11 @@ bool api_chat(ApiClient *api, const char *system_prompt,
        size we could check more rigorously; here we verify that the
        null-terminated view is self-consistent. */
     if (sys_in_len > 0 && system_prompt[sys_in_len] != '\0') {
-        log_warn("API: system_prompt has data after null terminator at offset %d",
+        LOG_W("API: system_prompt has data after null terminator at offset %d",
                  sys_in_len);
     }
     if (usr_in_len > 0 && user_prompt[usr_in_len] != '\0') {
-        log_warn("API: user_prompt has data after null terminator at offset %d",
+        LOG_W("API: user_prompt has data after null terminator at offset %d",
                  usr_in_len);
     }
 
@@ -250,7 +289,7 @@ bool api_chat(ApiClient *api, const char *system_prompt,
     if (!sys_esc || !usr_esc) {
         snprintf(api->last_error, sizeof(api->last_error),
             "out of memory for escape buffers");
-        log_error("API: malloc failed for escape buffers (sys=%d usr=%d)",
+        LOG_E("API: malloc failed for escape buffers (sys=%d usr=%d)",
                   sys_esc_sz, usr_esc_sz);
         free(sys_esc); free(usr_esc);
         curl_easy_cleanup(curl);
@@ -265,7 +304,7 @@ bool api_chat(ApiClient *api, const char *system_prompt,
         snprintf(api->last_error, sizeof(api->last_error),
             "system prompt too large after escaping (%d -> %d, buf=%d)",
             sys_in_len, sys_esc_len, sys_esc_sz);
-        log_error("API: sys_esc truncated (%d/%d)", sys_esc_len, sys_esc_sz);
+        LOG_E("API: sys_esc truncated (%d/%d)", sys_esc_len, sys_esc_sz);
         free(sys_esc); free(usr_esc);
         curl_easy_cleanup(curl);
         return false;
@@ -274,7 +313,7 @@ bool api_chat(ApiClient *api, const char *system_prompt,
         snprintf(api->last_error, sizeof(api->last_error),
             "user prompt too large after escaping (%d -> %d, buf=%d)",
             usr_in_len, usr_esc_len, usr_esc_sz);
-        log_error("API: usr_esc truncated (%d/%d), "
+        LOG_E("API: usr_esc truncated (%d/%d), "
                   "game state may be too large", usr_esc_len, usr_esc_sz);
         free(sys_esc); free(usr_esc);
         curl_easy_cleanup(curl);
@@ -303,7 +342,7 @@ bool api_chat(ApiClient *api, const char *system_prompt,
     if (!body) {
         snprintf(api->last_error, sizeof(api->last_error),
             "out of memory for request body");
-        log_error("API: malloc failed for body (%d bytes)", body_sz);
+        LOG_E("API: malloc failed for body (%d bytes)", body_sz);
         free(sys_esc); free(usr_esc);
         curl_easy_cleanup(curl);
         return false;
@@ -326,7 +365,7 @@ bool api_chat(ApiClient *api, const char *system_prompt,
     if (body_len < 0 || body_len >= body_sz) {
         snprintf(api->last_error, sizeof(api->last_error),
             "request body too large (%d bytes, limit=%d)", body_len, body_sz);
-        log_error("API: body build failed (len=%d, sz=%d)", body_len, body_sz);
+        LOG_E("API: body build failed (len=%d, sz=%d)", body_len, body_sz);
         free(body); free(sys_esc); free(usr_esc);
         curl_easy_cleanup(curl);
         return false;
@@ -346,7 +385,12 @@ bool api_chat(ApiClient *api, const char *system_prompt,
     WriteCtx ctx = { .buf = out, .size = 0, .cap = out_size };
 
     char url[512];
-    snprintf(url, sizeof(url), "%s/chat/completions", api->endpoint);
+    if (ends_with(api->endpoint, "/chat/completions")) {
+        snprintf(url, sizeof(url), "%s", api->endpoint);
+    } else {
+        snprintf(url, sizeof(url), "%s/chat/completions", api->endpoint);
+    }
+    LOG_D("API URL=%s", redact_for_log(url, api->api_key));
 
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_POST, 1L);
@@ -373,7 +417,7 @@ bool api_chat(ApiClient *api, const char *system_prompt,
     if (res != CURLE_OK) {
         snprintf(api->last_error, sizeof(api->last_error),
             "curl error: %s", curl_easy_strerror(res));
-        log_error("API: curl_easy_perform failed: %s", curl_easy_strerror(res));
+        LOG_E("API: curl_easy_perform failed: %s", curl_easy_strerror(res));
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
         free(body);
@@ -382,13 +426,14 @@ bool api_chat(ApiClient *api, const char *system_prompt,
 
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    log_info("API: HTTP %ld, response=%d bytes", http_code, ctx.size);
+    LOG_D("API: HTTP %ld, response=%d bytes", http_code, ctx.size);
     if (http_code != 200) {
         /* ── Detailed error logging ── */
 
         /* 1. Log full response body (first 500 chars) for diagnosis */
-        log_error("API: HTTP %ld — response body (%.500s)",
-                  http_code, out[0] ? out : "(empty)");
+        LOG_E("API: HTTP %ld — response body (%.500s)",
+                  http_code,
+                  out[0] ? redact_for_log(out, api->api_key) : "(empty)");
 
         /* 2. Try to extract "error"."message" from JSON response */
         {
@@ -409,7 +454,7 @@ bool api_chat(ApiClient *api, const char *system_prompt,
                         }
                         err_msg[ei] = '\0';
                         if (err_msg[0])
-                            log_error("API: error.message = \"%s\"", err_msg);
+                            LOG_E("API: error.message = \"%s\"", err_msg);
                     }
                 }
             }
@@ -428,11 +473,11 @@ bool api_chat(ApiClient *api, const char *system_prompt,
                     memcpy(body_copy, body, body_len + 1);
                     char *pos = strstr(body_copy, api->api_key);
                     if (pos) memset(pos, '*', strlen(api->api_key));
-                    log_error("API: request body (%.300s)", body_copy);
+                    LOG_E("API: request body (%.300s)", body_copy);
                     free(body_copy);
                 }
             } else {
-                log_error("API: request body (%.300s)", body);
+                LOG_E("API: request body (%.300s)", body);
             }
         }
 
@@ -478,10 +523,10 @@ bool api_chat(ApiClient *api, const char *system_prompt,
     curl_easy_cleanup(curl);
 
     /* Bug #2 fix: detect response truncation */
-    if (ctx.size >= out_size - 1 && out_size > 1) {
+    if (ctx.size > out_size - 1 && out_size > 1) {
         snprintf(api->last_error, sizeof(api->last_error),
             "response too large (truncated at %d bytes)", ctx.size);
-        log_error("API: response truncated (%d bytes)", ctx.size);
+        LOG_E("API: response truncated (%d bytes)", ctx.size);
         free(body);
         return false;
     }
@@ -491,7 +536,7 @@ bool api_chat(ApiClient *api, const char *system_prompt,
     raw[sizeof(raw) - 1] = '\0';
     api_accumulate_tokens(api, raw);
     extract_content(raw, out, out_size);
-    log_info("API: chat OK — content extracted: %d chars", (int)strlen(out));
+    LOG_I("API: chat OK — content extracted: %d chars", (int)strlen(out));
     free(body);
     return true;
 }
@@ -499,6 +544,12 @@ bool api_chat(ApiClient *api, const char *system_prompt,
 /* 解析单行标记 — 取 tag 后到行尾的内容 */
 static bool parse_tag(const char *text, const char *tag, char *out, int out_size)
 {
+    /* NULL guard: defend all four pointer/size parameters */
+    if (!text || !tag || !out || out_size <= 0) {
+        if (out && out_size > 0) out[0] = '\0';
+        return false;
+    }
+
     /* Find tag at line start (\n prefix) or beginning of text */
     /* Bug #4 fix: don't skip past valid matches when tag appears mid-text */
     const char *p = text;
@@ -516,7 +567,7 @@ static bool parse_tag(const char *text, const char *tag, char *out, int out_size
     /* Trim trailing \r */
     while (len > 0 && (p[len - 1] == '\r' || p[len - 1] == ' ')) len--;
     if (len < 0 || len > out_size - 1) {
-        log_error("parse_tag: invalid length %d (out_size=%d)", len, out_size);
+        LOG_E("parse_tag: invalid length %d (out_size=%d)", len, out_size);
         out[0] = '\0';
         return false;
     }
@@ -599,7 +650,7 @@ static bool parse_block(const char *text, const char *tag,
 bool api_select_vars(ApiClient *api, const char *user_input,
                      const char *var_catalog, VarSelectResult *result)
 {
-    log_info("API: select_vars (input=%.40s)", user_input);
+    LOG_I("API: select_vars (input=%.40s)", user_input);
     memset(result, 0, sizeof(*result));
 
     const char *sys =
@@ -665,7 +716,7 @@ bool api_select_vars(ApiClient *api, const char *user_input,
 bool api_generate(ApiClient *api, const char *user_input,
                   const char *selected_vars, FullResponse *result)
 {
-    log_info("API: generate (input=%.40s)", user_input);
+    LOG_I("API: generate (input=%.40s)", user_input);
     memset(result, 0, sizeof(*result));
     result->time_advance = -1;
     result->weather = -1;
@@ -737,7 +788,7 @@ bool api_generate(ApiClient *api, const char *user_input,
     if (!api_chat(api, sys, prompt, raw, sizeof(raw), 4096)) {
         return false;
     }
-    log_info("API: generate: api_chat OK, raw length=%d, preview=%.200s",
+    LOG_I("API: generate: api_chat OK, raw length=%d, preview=%.200s",
              (int)strlen(raw), raw);
     safe_strcpy(result->raw, raw, sizeof(result->raw));
 
@@ -800,7 +851,7 @@ bool api_generate(ApiClient *api, const char *user_input,
     SAFE_TERM(result->raw);
     #undef SAFE_TERM
 
-    log_info("API: generate OK — text=%d chg=%d time=%d weather=%d loc=%s",
+    LOG_I("API: generate OK — text=%d chg=%d time=%d weather=%d loc=%s",
              (int)strlen(result->text), (int)strlen(result->changes),
              result->time_advance, result->weather,
              result->location[0] ? result->location : "(none)");
@@ -839,7 +890,7 @@ bool api_create_world(ApiClient *api,
     const char *intelligence, const char *skills, const char *items,
     const char *story, WorldCreateResult *result)
 {
-    log_info("API: create_world (name=%s)", name);
+    LOG_I("API: create_world (name=%s)", name);
     memset(result, 0, sizeof(*result));
 
     const char *sys =
@@ -885,28 +936,42 @@ bool api_create_world(ApiClient *api,
 
     char prompt[16384];
     int p = 0;
-    p += snprintf(prompt + p, sizeof(prompt) - p,
+    int remain = (int)sizeof(prompt);
+
+    p += snprintf(prompt + p, remain - p,
         "【角色卡（无性格，由你根据故事补充）】\n"
         "姓名: %s\n年龄: %s\n性别: %s\n衣着: %s\n金钱: %s\n",
         name, age, gender ? gender : "未设定", clothing, money);
-    p += snprintf(prompt + p, sizeof(prompt) - p,
+    if (p >= remain) goto prompt_overflow;
+
+    p += snprintf(prompt + p, remain - p,
         "颜值: %s  体质: %s  智力: %s\n",
         appearance, constitution, intelligence);
-    if (skills && skills[0])
-        p += snprintf(prompt + p, sizeof(prompt) - p, "技能: %s\n", skills);
-    if (items && items[0])
-        p += snprintf(prompt + p, sizeof(prompt) - p, "持有物: %s\n", items);
-    p += snprintf(prompt + p, sizeof(prompt) - p,
+    if (p >= remain) goto prompt_overflow;
+
+    if (skills && skills[0]) {
+        p += snprintf(prompt + p, remain - p, "技能: %s\n", skills);
+        if (p >= remain) goto prompt_overflow;
+    }
+    if (items && items[0]) {
+        p += snprintf(prompt + p, remain - p, "持有物: %s\n", items);
+        if (p >= remain) goto prompt_overflow;
+    }
+    p += snprintf(prompt + p, remain - p,
         "\n【角色故事】\n%s\n\n"
         "请创建世界。至少15个地点、至少5个角色卡(含玩家)。",
         story);
+    if (p >= remain) goto prompt_overflow;
 
-    /* Bug #6 fix: detect truncation of prompt buffer */
-    if (p >= (int)sizeof(prompt)) {
-        snprintf(api->last_error, sizeof(api->last_error),
-            "world create prompt too large");
-        return false;
-    }
+    /* Normal path continues after the goto target */
+    goto prompt_ok;
+
+prompt_overflow:
+    snprintf(api->last_error, sizeof(api->last_error),
+        "world create prompt too large (%d/%d bytes)", p, remain);
+    return false;
+
+prompt_ok:;
 
     char raw[32768];
     if (!api_chat(api, sys, prompt, raw, sizeof(raw), 4096)) {

@@ -1,4 +1,5 @@
 #include "event.h"
+#include "log.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +45,8 @@ int event_push(EventLog *log, long long tick, int source_id, int target_id,
     }
 
     log->count++;
+    LOG_D("Event #%d: type=%d tick=%lld source=%d target=%d",
+          e->id, (int)type, tick, source_id, target_id);
     return e->id;
 }
 
@@ -103,7 +106,7 @@ char *event_export_json(const EventLog *log)
 {
     if (log->count == 0) {
         char *empty = (char *)malloc(4);
-        if (empty) strcpy(empty, "[]");
+        if (empty) safe_strcpy(empty, "[]", 4);
         return empty;
     }
 

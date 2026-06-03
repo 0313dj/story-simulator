@@ -7,6 +7,10 @@ import { EventBus } from '../shared/eventbus.js';
 import { sendMessage as apiSendMessage, getChatHistory, getState } from '../shared/api.js';
 import { $, escapeHtml } from '../shared/utils.js';
 
+/* ── Constants ── */
+const MAX_MSG_LENGTH = 2048;   /* matches backend CTX_MAX_CHAT_TEXT */
+const MAX_MSG_NODES  = 200;    /* cap DOM nodes for performance */
+
 /* ── DOM helpers ── */
 
 function addMsg(html, cls) {
@@ -15,6 +19,12 @@ function addMsg(html, cls) {
   div.className = cls || '';
   div.innerHTML = html;
   container.appendChild(div);
+
+  /* Cap message nodes: remove oldest when exceeding limit */
+  while (container.children.length > MAX_MSG_NODES) {
+    container.removeChild(container.firstChild);
+  }
+
   $('chat-area').scrollTop = $('chat-area').scrollHeight;
 }
 
@@ -27,7 +37,18 @@ function addPlayerMsg(text)  { addMsg(escapeHtml('> ' + text), 'msg-player'); }
 async function sendMessage() {
   const field = $('input-field');
   const text = field.value.trim();
-  if (!text || state.busy) return;
+
+  /* Guard: empty, busy, or too long */
+  if (!text) return;
+  if (state.busy) {
+    addSystemMsg('请等待当前请求完成');
+    return;
+  }
+  if (text.length > MAX_MSG_LENGTH) {
+    addSystemMsg('消息过长（最大 ' + MAX_MSG_LENGTH + ' 字符，当前 ' + text.length + '）');
+    return;
+  }
+
   field.value = '';
 
   addPlayerMsg(text);

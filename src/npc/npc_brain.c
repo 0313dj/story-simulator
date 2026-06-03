@@ -648,7 +648,7 @@ char* nb_tick(NpcBrain *brain, CharacterCard *npc, CharacterCard *player,
         while (i < brain->goal_count) {
             if (brain->goals[i].expiry_tick > 0 &&
                 current_tick >= brain->goals[i].expiry_tick) {
-                log_info("NPC Brain: %s expired goal #%d (%s)", npc->name, i,
+                LOG_D("NPC Brain: %s expired goal #%d (%s)", npc->name, i,
                          goal_type_str(brain->goals[i].type));
                 nb_remove_goal(brain, i);
             } else {
@@ -664,10 +664,10 @@ char* nb_tick(NpcBrain *brain, CharacterCard *npc, CharacterCard *player,
                 long long expiry = current_tick + 2880; /* ~2 days in ticks */
                 char params[64] = "";
                 nb_add_goal(brain, gt, "", params, 50, current_tick, expiry);
-                log_info("NPC Brain: %s new goal=%s", npc->name, goal_type_str(gt));
+                LOG_D("NPC Brain: %s new goal=%s", npc->name, goal_type_str(gt));
                 brain->idle_rounds = 0;
             } else {
-                log_info("NPC Brain: %s -> IDLE (round %d)", npc->name, brain->idle_rounds + 1);
+                LOG_D("NPC Brain: %s -> IDLE (round %d)", npc->name, brain->idle_rounds + 1);
                 brain->idle_rounds++;
             }
         }

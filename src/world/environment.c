@@ -145,19 +145,19 @@ void env_parse_location(Environment *env, const char *loc_str)
     /* 检测同层级名称复用：大地点包含自身或小地点与大地点同名 */
     if (env->location.area[0] && env->location.district[0] &&
         strcmp(env->location.area, env->location.district) == 0) {
-        log_warn("env_parse_location: district '%s' same as area — "
+        LOG_W("env_parse_location: district '%s' same as area — "
                  "可能由AI输出不规范造成，district已清空", env->location.district);
         env->location.district[0] = '\0';
     }
     if (env->location.area[0] && env->location.spot[0] &&
         strcmp(env->location.area, env->location.spot) == 0) {
-        log_warn("env_parse_location: spot '%s' same as area — "
+        LOG_W("env_parse_location: spot '%s' same as area — "
                  "可能由AI输出不规范造成，spot已清空", env->location.spot);
         env->location.spot[0] = '\0';
     }
     if (env->location.district[0] && env->location.spot[0] &&
         strcmp(env->location.district, env->location.spot) == 0) {
-        log_warn("env_parse_location: spot '%s' same as district — "
+        LOG_W("env_parse_location: spot '%s' same as district — "
                  "可能由AI输出不规范造成，spot已清空", env->location.spot);
         env->location.spot[0] = '\0';
     }

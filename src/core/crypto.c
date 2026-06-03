@@ -30,30 +30,43 @@ static char *base64_encode(const BYTE *data, int len)
 
 static BYTE *base64_decode(const char *in, int *out_len)
 {
-    int len = (int)strlen(in);
-    if (len % 4 != 0) return NULL;
+    /* Bug #20: strip whitespace (newlines, spaces) before decoding.
+       This handles base64 text that may have been wrapped or indented. */
+    int raw_len = (int)strlen(in);
+    char *clean = (char *)malloc(raw_len + 1);
+    if (!clean) return NULL;
+    int ci = 0;
+    for (int i = 0; i < raw_len; i++) {
+        char ch = in[i];
+        if (ch != '\n' && ch != '\r' && ch != ' ' && ch != '\t')
+            clean[ci++] = ch;
+    }
+    clean[ci] = '\0';
+
+    int len = ci;
+    if (len % 4 != 0) { free(clean); return NULL; }
     *out_len = len / 4 * 3;
-    if (in[len - 1] == '=') (*out_len)--;
-    if (in[len - 2] == '=') (*out_len)--;
+    if (clean[len - 1] == '=') (*out_len)--;
+    if (clean[len - 2] == '=') (*out_len)--;
     BYTE *out = (BYTE *)malloc(*out_len);
-    if (!out) return NULL;
+    if (!out) { free(clean); return NULL; }
     int j = 0;
     for (int i = 0; i < len; i += 4) {
         /* Bug #18: validate characters are in b64_table before pointer subtraction */
-        const char *pa = strchr(b64_table, in[i]);
-        const char *pb = strchr(b64_table, in[i+1]);
-        if (!pa || !pb) { free(out); return NULL; }
+        const char *pa = strchr(b64_table, clean[i]);
+        const char *pb = strchr(b64_table, clean[i+1]);
+        if (!pa || !pb) { free(out); free(clean); return NULL; }
         int a = (int)(pa - b64_table);
         int b = (int)(pb - b64_table);
         int c = 0, d = 0;
-        if (in[i+2] != '=') {
-            const char *pc = strchr(b64_table, in[i+2]);
-            if (!pc) { free(out); return NULL; }
+        if (clean[i+2] != '=') {
+            const char *pc = strchr(b64_table, clean[i+2]);
+            if (!pc) { free(out); free(clean); return NULL; }
             c = (int)(pc - b64_table);
         }
-        if (in[i+3] != '=') {
-            const char *pd = strchr(b64_table, in[i+3]);
-            if (!pd) { free(out); return NULL; }
+        if (clean[i+3] != '=') {
+            const char *pd = strchr(b64_table, clean[i+3]);
+            if (!pd) { free(out); free(clean); return NULL; }
             d = (int)(pd - b64_table);
         }
         int n = (a << 18) | (b << 12) | (c << 6) | d;
@@ -61,6 +74,7 @@ static BYTE *base64_decode(const char *in, int *out_len)
         if (j < *out_len) out[j++] = (BYTE)((n >> 8) & 255);
         if (j < *out_len) out[j++] = (BYTE)(n & 255);
     }
+    free(clean);
     return out;
 }
 
@@ -104,9 +118,18 @@ char *crypto_decrypt(const char *b64_cipher)
 
 /* ── 多配置文件存取（V2格式）── */
 
-int crypto_load_profiles(ApiProfile *out, int max_count)
+int crypto_load_profiles(const char *base_dir, ApiProfile *out, int max_count)
 {
-    FILE *fp = fopen("secrets.dat", "r");
+    char cwd[MAX_PATH];
+    GetCurrentDirectoryA(sizeof(cwd), cwd);
+    LOG_I("crypto_load: CWD=%s", cwd);
+    LOG_I("crypto_load: base_dir=%s", base_dir);
+
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s\\secrets.dat", base_dir);
+    LOG_I("crypto_load: opening %s", path);
+
+    FILE *fp = fopen(path, "r");
     if (!fp) return 0;
 
     fseek(fp, 0, SEEK_END);
@@ -132,6 +155,7 @@ int crypto_load_profiles(ApiProfile *out, int max_count)
 
         char *p = ep;
         int count = atoi(p);
+        LOG_I("DECRYPTED: %d profile(s)", count);
         if (count <= 0 || count > max_count) { free(ep); free(raw); return 0; }
         p = strchr(p, '\n');
         if (!p) { free(ep); free(raw); return 0; }
@@ -164,12 +188,13 @@ int crypto_load_profiles(ApiProfile *out, int max_count)
     }
 
     /* 回退：V1 旧格式 → 升级至 Default */
+    /* Bug #21: add logging for V1 format failures so users can diagnose issues */
     char *lines[3] = {raw, NULL, NULL};
     lines[1] = strchr(raw, '\n');
-    if (!lines[1]) { free(raw); return 0; }
+    if (!lines[1]) { LOG_W("crypto: V1 format parse failed (missing line 2)"); free(raw); return 0; }
     *lines[1] = '\0'; lines[1]++;
     lines[2] = strchr(lines[1], '\n');
-    if (!lines[2]) { free(raw); return 0; }
+    if (!lines[2]) { LOG_W("crypto: V1 format parse failed (missing line 3)"); free(raw); return 0; }
     *lines[2] = '\0'; lines[2]++;
     char *end = strchr(lines[2], '\n');
     if (end) *end = '\0';
@@ -184,20 +209,29 @@ int crypto_load_profiles(ApiProfile *out, int max_count)
         safe_strcpy(out[0].api_key,  key, sizeof(out[0].api_key));
         safe_strcpy(out[0].model,    md,  sizeof(out[0].model));
         ret = 1;
+    } else {
+        if (!ep)  LOG_W("crypto: V1 decrypt failed for endpoint field");
+        if (!key) LOG_W("crypto: V1 decrypt failed for api_key field");
+        if (!md)  LOG_W("crypto: V1 decrypt failed for model field");
+        LOG_I("crypto: V1 format decryption failed — profiles file may be corrupt; "
+                 "delete secrets.dat to start fresh");
     }
     free(ep); free(key); free(md); free(raw);
     return ret;
 }
 
-bool crypto_save_profiles(const ApiProfile *profiles, int count)
+bool crypto_save_profiles(const char *base_dir, const ApiProfile *profiles, int count)
 {
     if (count < 0 || count > MAX_API_PROFILES) return false;
+
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s\\secrets.dat", base_dir);
 
     /* Allow count==0 to clear all profiles */
     if (count == 0) {
         char *ep = crypto_encrypt("0\n");
         if (!ep) return false;
-        FILE *fp = fopen("secrets.dat", "w");
+        FILE *fp = fopen(path, "w");
         if (!fp) { free(ep); return false; }
         fprintf(fp, "V2\n%s", ep);
         fclose(fp);
@@ -223,7 +257,7 @@ bool crypto_save_profiles(const ApiProfile *profiles, int count)
     if (!ep) { free(buf); return false; }
 
     /* 写入 "V2\n" + 加密正文 */
-    FILE *fp = fopen("secrets.dat", "w");
+    FILE *fp = fopen(path, "w");
     if (!fp) { free(ep); free(buf); return false; }
     fprintf(fp, "V2\n%s", ep);
     fclose(fp);

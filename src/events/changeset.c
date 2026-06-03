@@ -141,7 +141,7 @@ static void cs_apply_one(const ChangeEntryFull *e, CharacterCard *target,
                 if (strcmp(target->skills[i].name, e->field) == 0) {
                     int new_level = target->skills[i].level + e->delta;
                     if (new_level < 0 || new_level > 100) {
-                        log_warn("cs_apply: skill '%s' delta %d -> %d "
+                        LOG_W("cs_apply: skill '%s' delta %d -> %d "
                                  "out of range [0,100] (will be clamped)",
                                  e->field, e->delta, new_level);
                     }
@@ -211,7 +211,7 @@ static void cs_apply_one(const ChangeEntryFull *e, CharacterCard *target,
                 for (int i = 0; i < target->skill_count; i++) {
                     if (strcmp(target->skills[i].name, e->field) == 0) {
                         if (e->new_value < 0 || e->new_value > 100) {
-                            log_warn("cs_apply: skill '%s' set to %d "
+                            LOG_W("cs_apply: skill '%s' set to %d "
                                      "out of range [0,100] (will be clamped)",
                                      e->field, e->new_value);
                         }

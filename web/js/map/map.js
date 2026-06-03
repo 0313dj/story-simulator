@@ -132,7 +132,25 @@ function mapRenderModal() {
         document.getElementById('map-pan-group')?.setAttribute('transform', 'translate(' + nav.panX.toFixed(1) + ',' + nav.panY.toFixed(1) + ')');
       });
       window.addEventListener('mouseup', () => { if (drag.on) { drag.on = false; svgEl.style.cursor = 'grab'; } });
-      svgEl.onwheel = e => { e.preventDefault(); nav.zoom = Math.max(0.5, Math.min(3.0, (nav.zoom || 1) + (e.deltaY < 0 ? 0.25 : -0.25))); mapRenderModal(); return false; };
+      svgEl.onwheel = e => {
+        e.preventDefault();
+        const newZoom = Math.max(0.5, Math.min(3.0, (nav.zoom || 1) + (e.deltaY < 0 ? 0.25 : -0.25)));
+        nav.zoom = newZoom;
+        /* Instant visual feedback via CSS transform — avoids full SVG rebuild
+           on every wheel tick. After zoom stops, debounced re-render produces
+           the crisp final result. */
+        svgEl.style.transform = 'scale(' + newZoom + ')';
+        svgEl.style.transformOrigin = 'center center';
+        svgEl.style.transition = 'transform 0.05s ease-out';
+        clearTimeout(svgEl._wheelTimer);
+        svgEl._wheelTimer = setTimeout(() => {
+          svgEl.style.transform = '';
+          svgEl.style.transformOrigin = '';
+          svgEl.style.transition = '';
+          mapRenderModal();
+        }, 150);
+        return false;
+      };
       svgEl.querySelectorAll('circle[data-level]').forEach(c => {
         c.onclick = () => {
           const lv = parseInt(c.dataset.level);

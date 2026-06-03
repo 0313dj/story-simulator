@@ -1,4 +1,5 @@
 #include "character_card.h"
+#include "log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,7 +8,12 @@ void cc_init(CharacterCard *card, EntityType type)
 {
     memset(card, 0, sizeof(*card));
     card->entity_type = type;
+    /* Default TypeIDs — these can be overridden when loading from Registry */
+    card->race_id       = TYPEID_NONE;
+    card->profession_id = TYPEID_NONE;
+    card->faction_id    = TYPEID_NONE;
     mem_init(&card->memory);
+    emotion_init(&card->emotion);
 }
 
 void cc_set_attributes(CharacterCard *card, int appearance, int constitution, int intelligence)
@@ -36,8 +42,7 @@ bool cc_add_item(CharacterCard *card, const char *name, int quantity)
         }
     }
 
-    strncpy(card->items[card->item_count].name, name, MAX_ITEM_NAME_LEN - 1);
-    card->items[card->item_count].name[MAX_ITEM_NAME_LEN - 1] = '\0';
+    safe_strcpy(card->items[card->item_count].name, name, MAX_ITEM_NAME_LEN);
     card->items[card->item_count].quantity = quantity;
     card->item_count++;
     return true;
@@ -71,8 +76,7 @@ bool cc_add_skill(CharacterCard *card, const char *name, int level)
         }
     }
 
-    strncpy(card->skills[card->skill_count].name, name, MAX_SKILL_NAME_LEN - 1);
-    card->skills[card->skill_count].name[MAX_SKILL_NAME_LEN - 1] = '\0';
+    safe_strcpy(card->skills[card->skill_count].name, name, MAX_SKILL_NAME_LEN);
     card->skills[card->skill_count].level = level;
     card->skill_count++;
     return true;
@@ -99,8 +103,7 @@ bool cc_add_relation(CharacterCard *card, const char *target, RelationType type,
         }
     }
 
-    strncpy(card->relations[card->relation_count].target, target, MAX_REL_TARGET_LEN - 1);
-    card->relations[card->relation_count].target[MAX_REL_TARGET_LEN - 1] = '\0';
+    safe_strcpy(card->relations[card->relation_count].target, target, MAX_REL_TARGET_LEN);
     card->relations[card->relation_count].type    = type;
     card->relations[card->relation_count].affinity = affinity;
     card->relation_count++;
@@ -146,20 +149,27 @@ const char *relation_type_str(RelationType t)
 /* 导出完整游戏状态为可读文本（发给AI用） */
 int cc_export_state(const CharacterCard *card, char *out, int out_size, bool is_player)
 {
+    /* Bug #30: use a safety macro to prevent snprintf with negative/zero
+       remaining size, which is undefined behavior. */
+#define SAFE_APPEND(fmt, ...) do { \
+    if (pos >= out_size) break; \
+    int _w = snprintf(out + pos, out_size - pos, fmt, ##__VA_ARGS__); \
+    if (_w < 0) break; \
+    pos += _w; \
+} while(0)
+
     int pos = 0;
 
-    pos += snprintf(out + pos, out_size - pos,
+    SAFE_APPEND(
         "=== 人物信息 ===\n"
         "姓名: %s\n年龄: %d\n性别: %s\n衣着: %s\n",
         card->name, card->age,
         card->gender[0] ? card->gender : "未设定",
         card->clothing);
     if (!is_player) {
-        pos += snprintf(out + pos, out_size - pos,
-            "身份: %s\n", card->personality);
+        SAFE_APPEND("身份: %s\n", card->personality);
         if (card->home[0]) {
-            pos += snprintf(out + pos, out_size - pos,
-                "住所: %s\n", card->home);
+            SAFE_APPEND("住所: %s\n", card->home);
         }
     }
 
@@ -177,74 +187,74 @@ int cc_export_state(const CharacterCard *card, char *out, int out_size, bool is_
         default: st = "正常"; break;
     }
 
-    pos += snprintf(out + pos, out_size - pos,
+    SAFE_APPEND(
         "状态: %s\n金钱: %d\n颜值: %d\n体质: %d\n智力: %d\n",
         st, card->money, card->attr.appearance,
         card->attr.constitution, card->attr.intelligence);
 
     if (card->skill_count > 0) {
-        pos += snprintf(out + pos, out_size - pos, "技能: ");
+        SAFE_APPEND("技能: ");
         for (int i = 0; i < card->skill_count; i++) {
-            pos += snprintf(out + pos, out_size - pos, "%s(Lv.%d) ",
+            SAFE_APPEND("%s(Lv.%d) ",
                 card->skills[i].name, card->skills[i].level);
         }
-        pos += snprintf(out + pos, out_size - pos, "\n");
+        SAFE_APPEND("\n");
     }
 
     if (card->item_count > 0) {
-        pos += snprintf(out + pos, out_size - pos, "持有物: ");
+        SAFE_APPEND("持有物: ");
         for (int i = 0; i < card->item_count; i++) {
-            pos += snprintf(out + pos, out_size - pos, "%s×%d ",
+            SAFE_APPEND("%s×%d ",
                 card->items[i].name, card->items[i].quantity);
         }
-        pos += snprintf(out + pos, out_size - pos, "\n");
+        SAFE_APPEND("\n");
     }
 
     if (card->relation_count > 0) {
-        pos += snprintf(out + pos, out_size - pos, "关系: ");
+        SAFE_APPEND("关系: ");
         for (int i = 0; i < card->relation_count; i++) {
-            pos += snprintf(out + pos, out_size - pos, "%s(%s,好感%d) ",
+            SAFE_APPEND("%s(%s,好感%d) ",
                 card->relations[i].target,
                 relation_type_str(card->relations[i].type),
                 card->relations[i].affinity);
         }
-        pos += snprintf(out + pos, out_size - pos, "\n");
+        SAFE_APPEND("\n");
     }
 
     if (!is_player) {
-        pos += snprintf(out + pos, out_size - pos,
+        SAFE_APPEND(
             "与玩家好感度: %d  上次互动: %d-%02d-%02d\n",
             card->player_affinity,
             card->last_interaction.year, card->last_interaction.month,
             card->last_interaction.day);
     }
 
-    /* 记忆导出 */
     if (card->memory.short_count > 0) {
-        pos += snprintf(out + pos, out_size - pos, "近期对话记忆: ");
+        SAFE_APPEND("近期对话记忆: ");
         for (int i = 0; i < card->memory.short_count; i++) {
-            pos += snprintf(out + pos, out_size - pos, "%s; ",
+            SAFE_APPEND("%s; ",
                 card->memory.short_term[i].content);
         }
-        pos += snprintf(out + pos, out_size - pos, "\n");
+        SAFE_APPEND("\n");
     }
     if (card->memory.long_count > 0) {
-        pos += snprintf(out + pos, out_size - pos, "近期事件记忆: ");
+        SAFE_APPEND("近期事件记忆: ");
         for (int i = 0; i < card->memory.long_count; i++) {
-            pos += snprintf(out + pos, out_size - pos, "%s; ",
+            SAFE_APPEND("%s; ",
                 card->memory.long_term[i].content);
         }
-        pos += snprintf(out + pos, out_size - pos, "\n");
+        SAFE_APPEND("\n");
     }
     if (card->memory.perm_count > 0) {
-        pos += snprintf(out + pos, out_size - pos, "重要记忆: ");
+        SAFE_APPEND("重要记忆: ");
         for (int i = 0; i < card->memory.perm_count; i++) {
-            pos += snprintf(out + pos, out_size - pos, "%s; ",
+            SAFE_APPEND("%s; ",
                 card->memory.permanent[i].content);
         }
-        pos += snprintf(out + pos, out_size - pos, "\n");
+        SAFE_APPEND("\n");
     }
 
+#undef SAFE_APPEND
     return pos;
 }
 
@@ -257,7 +267,19 @@ void cc_set_player_affinity(CharacterCard *card, int value)
 
 void cc_touch_interaction(CharacterCard *card, const GameTime *now)
 {
-    card->last_interaction = *now;
+    /* Bug #29: prevent time reversal — only update if the new time is
+       not earlier than the existing timestamp. A backwards time jump
+       would make the staleness calculation incorrect. */
+    if (!now) return;
+    if (card->last_interaction.year == 0 ||
+        now->year > card->last_interaction.year ||
+        (now->year == card->last_interaction.year &&
+         now->month > card->last_interaction.month) ||
+        (now->year == card->last_interaction.year &&
+         now->month == card->last_interaction.month &&
+         now->day >= card->last_interaction.day)) {
+        card->last_interaction = *now;
+    }
 }
 
 bool cc_is_stale_npc(const CharacterCard *card, const GameTime *now)

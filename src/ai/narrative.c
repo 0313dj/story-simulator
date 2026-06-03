@@ -96,66 +96,93 @@ bool narrative_generate(ApiClient *api, const WorldResult *wr,
 
     if (!api || !wr || !game_state_snapshot) return false;
 
-    /* Build the narrative prompt with all available context */
-    char prompt[24576];
+    /* Build the narrative prompt with all available context.
+       Bug #35: use dynamic allocation instead of fixed 24576-byte stack buffer
+       to prevent truncation with large game state snapshots. */
+    /* Estimate needed size: sum of all input sections + overhead */
+    int est = 512; /* base overhead */
+    if (wr->user_input[0])      est += (int)strlen(wr->user_input) + 64;
+    if (wr->intent_type[0])     est += (int)strlen(wr->intent_type) + 128;
+    if (wr->intent_target[0])   est += (int)strlen(wr->intent_target) + 32;
+    if (wr->plan_summary[0])    est += (int)strlen(wr->plan_summary) + 64;
+    if (wr->events_summary[0])  est += (int)strlen(wr->events_summary) + 64;
+    if (wr->style != NSTYLE_AUTO) est += 128;
+    if (game_state_snapshot[0]) est += (int)strlen(game_state_snapshot) + 64;
+    if (wr->context[0])         est += (int)strlen(wr->context) + 64;
+
+    /* Clamp to reasonable bounds: min 8KB, max 128KB */
+    if (est < 8192) est = 8192;
+    if (est > 131072) est = 131072;
+
+    char *prompt = (char *)malloc(est);
+    if (!prompt) {
+        LOG_E("narrative: malloc(%d) failed for prompt buffer", est);
+        return false;
+    }
     int pos = 0;
 
     /* User input */
     if (wr->user_input[0]) {
-        pos += snprintf(prompt + pos, sizeof(prompt) - pos,
+        pos += snprintf(prompt + pos, est - pos,
             "玩家行动：%s\n\n", wr->user_input);
     }
 
     /* Intent context */
     if (wr->intent_type[0]) {
-        pos += snprintf(prompt + pos, sizeof(prompt) - pos,
+        pos += snprintf(prompt + pos, est - pos,
             "玩家意图：%s (置信度: %.0f%%)",
             wr->intent_type, wr->intent_confidence * 100.0f);
         if (wr->intent_target[0]) {
-            pos += snprintf(prompt + pos, sizeof(prompt) - pos,
+            pos += snprintf(prompt + pos, est - pos,
                 " → %s", wr->intent_target);
         }
-        pos += snprintf(prompt + pos, sizeof(prompt) - pos, "\n");
+        pos += snprintf(prompt + pos, est - pos, "\n");
     }
 
     /* Plan summary */
     if (wr->plan_summary[0]) {
-        pos += snprintf(prompt + pos, sizeof(prompt) - pos,
+        pos += snprintf(prompt + pos, est - pos,
             "执行计划：%s\n", wr->plan_summary);
     }
 
     /* Events / changes summary */
     if (wr->events_summary[0]) {
-        pos += snprintf(prompt + pos, sizeof(prompt) - pos,
+        pos += snprintf(prompt + pos, est - pos,
             "\n发生的事件：\n%s\n", wr->events_summary);
     }
 
     /* Style instruction */
     if (wr->style != NSTYLE_AUTO) {
-        pos += snprintf(prompt + pos, sizeof(prompt) - pos,
+        pos += snprintf(prompt + pos, est - pos,
             "\n叙事风格要求：%s\n", narrative_style_str(wr->style));
     }
 
     /* Game state snapshot */
     if (game_state_snapshot[0]) {
-        pos += snprintf(prompt + pos, sizeof(prompt) - pos,
+        pos += snprintf(prompt + pos, est - pos,
             "\n游戏状态：\n%s\n", game_state_snapshot);
     }
 
     /* Context */
     if (wr->context[0]) {
-        pos += snprintf(prompt + pos, sizeof(prompt) - pos,
+        pos += snprintf(prompt + pos, est - pos,
             "\n场景上下文：\n%s\n", wr->context);
     }
 
-    pos += snprintf(prompt + pos, sizeof(prompt) - pos,
+    pos += snprintf(prompt + pos, est - pos,
         "\n请生成叙事文本。");
+
+    if (pos >= est) {
+        LOG_W("narrative: prompt truncated (%d >= %d)", pos, est);
+    }
 
     char raw[NARR_MAX_TEXT_LEN];
     memset(raw, 0, sizeof(raw));
 
     const char *sys = narrative_get_system_prompt();
-    if (!api_chat(api, sys, prompt, raw, sizeof(raw), 2048)) {
+    bool ok = api_chat(api, sys, prompt, raw, sizeof(raw), 2048);
+    free(prompt);
+    if (!ok) {
         return false;
     }
 
@@ -172,6 +199,12 @@ bool narrative_generate(ApiClient *api, const WorldResult *wr,
         while (end > p && (*end == '\n' || *end == '\r' || *end == ' '))
             *end-- = '\0';
 
+        /* Bug #36: detect truncation of narrative text.
+           NARR_MAX_TEXT_LEN (4096) may be insufficient for long AI responses. */
+        int src_len = (int)strlen(p);
+        if (src_len >= NARR_MAX_TEXT_LEN) {
+            LOG_W("narrative: text truncated (%d bytes, max %d)", src_len, NARR_MAX_TEXT_LEN);
+        }
         strncpy(nt->text, p, NARR_MAX_TEXT_LEN - 1);
         nt->text[NARR_MAX_TEXT_LEN - 1] = '\0';
     }

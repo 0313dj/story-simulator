@@ -153,6 +153,9 @@ void pop_sim_tick(WorldState *ws, EventLog *events, long long tick)
     set_int_var(ws, POP_VAR_MIGRATION, migration);
     set_int_var(ws, POP_VAR_GROWTH, net_change);
 
+    LOG_I("Population tick: total=%d births=%d deaths=%d migration=%d",
+          population, births, deaths, mig_noise);
+
     /* Log significant changes */
     if (abs(net_change) > 50) {
         event_push(events, tick, -1, -1, EVENT_WORLD_TICK,

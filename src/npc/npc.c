@@ -91,8 +91,7 @@ bool npc_parse_spawn_line(const char *line, NpcSpawn *sp)
     memset(sp, 0, sizeof(*sp));
 
     char buf[256];
-    strncpy(buf, line, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
+    safe_strcpy(buf, line, sizeof(buf));
 
     char *s1 = buf;
     char *s2 = strchr(buf, '|');
@@ -122,8 +121,7 @@ bool npc_parse_temp_line(const char *line, TempNpc *tp)
     memset(tp, 0, sizeof(*tp));
 
     char buf[384];
-    strncpy(buf, line, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
+    safe_strcpy(buf, line, sizeof(buf));
 
     char *s1 = buf;
     char *s2 = strchr(buf, '|');
@@ -143,13 +141,12 @@ static void apply_create_line(CharacterCard *card, const char *line)
     /* Limit single-line length to prevent buffer overflow from
        malformed AI output (e.g. unescaped newlines in personality). */
     if (strlen(line) > 512) {
-        log_warn("apply_create_line: line too long (%zu chars), truncating: %.40s...",
+        LOG_W("apply_create_line: line too long (%zu chars), truncating: %.40s...",
                  strlen(line), line);
     }
 
     char buf[513];
-    strncpy(buf, line, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
+    safe_strcpy(buf, line, sizeof(buf));
 
     /* 去除首尾空白 */
     char *s = buf;
@@ -157,8 +154,6 @@ static void apply_create_line(CharacterCard *card, const char *line)
     char *end = s + strlen(s) - 1;
     while (end > s && (*end == ' ' || *end == '\r' || *end == '\n')) *end-- = '\0';
     if (!*s) return;
-
-    log_info("apply_create_line: line='%s'", s);
 
     /* 找 = 或 + 或 - */
     char *eq = strchr(s, '=');
@@ -187,7 +182,7 @@ static void apply_create_line(CharacterCard *card, const char *line)
            cc_add_skill will clamp, but we warn here so developers can
            detect when the AI is not conforming to the spec. */
         if (lv < 0 || lv > 100) {
-            log_warn("apply_create_line: skill '%s' level %d out of range [0,100] "
+            LOG_W("apply_create_line: skill '%s' level %d out of range [0,100] "
                      "(AI output violation, will be clamped)", key + 6, lv);
         }
 
@@ -197,7 +192,7 @@ static void apply_create_line(CharacterCard *card, const char *line)
                 if (strcmp(card->skills[i].name, key + 6) == 0) {
                     int new_level = card->skills[i].level + lv;
                     if (new_level < 0 || new_level > 100) {
-                        log_warn("apply_create_line: skill '%s' delta %d -> %d "
+                        LOG_W("apply_create_line: skill '%s' delta %d -> %d "
                                  "out of range [0,100] (AI output violation)",
                                  key + 6, lv, new_level);
                     }
@@ -335,12 +330,12 @@ static void apply_create_line(CharacterCard *card, const char *line)
 bool npc_parse_create(const char *text, CharacterCard *card)
 {
     if (!text || !text[0]) {
-        log_warn("npc_parse_create: null or empty input text");
+        LOG_W("npc_parse_create: null or empty input text");
         return false;
     }
-    log_info("npc_parse_create: input length=%d, start=%.100s", (int)strlen(text), text);
+    LOG_D("npc_parse_create: input length=%d", (int)strlen(text));
     if (!card) {
-        log_error("npc_parse_create: null card pointer");
+        LOG_E("npc_parse_create: null card pointer");
         return false;
     }
 
@@ -349,26 +344,27 @@ bool npc_parse_create(const char *text, CharacterCard *card)
     /* Reject input that is clearly not a character card (e.g. raw JSON or
        narrative text).  A valid card must contain at least one "name=" line. */
     if (!strstr(text, "name=") && !strstr(text, "name+") && !strstr(text, "name-")) {
-        log_warn("npc_parse_create: input missing 'name=' field, rejecting (%d bytes)",
+        LOG_W("npc_parse_create: input missing 'name=' field, rejecting (%d bytes)",
                  (int)strlen(text));
         return false;
     }
 
     char buf[4096];
-    strncpy(buf, text, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
+    safe_strcpy(buf, text, sizeof(buf));
 
     /* Warn if input was truncated — AI may have returned junk */
     if (strlen(text) >= sizeof(buf)) {
-        log_warn("npc_parse_create: input truncated (%zu bytes -> %d), "
+        LOG_W("npc_parse_create: input truncated (%zu bytes -> %d), "
                  "AI output may be malformed",
                  strlen(text), (int)(sizeof(buf) - 1));
     }
 
     /* Bug #40: avoid strtok (not thread-safe); use manual line split.
        Limit to 256 lines to prevent infinite loops from malformed input
-       that lacks newline characters. */
-    #define PARSE_MAX_LINES 256
+       that lacks newline characters. Also enforce 512-char per-line limit
+       (per Phase 1 security plan: prevents buffer overflow in line parsing). */
+    #define PARSE_MAX_LINES    256
+    #define PARSE_MAX_LINE_LEN 512
     int line_count = 0;
     char *line = buf;
     while (line && *line && line_count < PARSE_MAX_LINES) {
@@ -376,24 +372,32 @@ bool npc_parse_create(const char *text, CharacterCard *card)
         if (nl) *nl = '\0';
         while (*line == ' ' || *line == '\r') line++;
         if (*line) {
+            int line_len = (int)strlen(line);
+            if (line_len > PARSE_MAX_LINE_LEN) {
+                LOG_W("npc_parse_create: line %d too long (%d chars), "
+                         "truncating to %d", line_count + 1, line_len,
+                         PARSE_MAX_LINE_LEN);
+                line[PARSE_MAX_LINE_LEN] = '\0';
+            }
             apply_create_line(card, line);
             line_count++;
         }
         line = nl ? nl + 1 : NULL;
     }
     if (line_count >= PARSE_MAX_LINES) {
-        log_warn("npc_parse_create: hit line limit (%d), input may be malformed",
+        LOG_W("npc_parse_create: hit line limit (%d), input may be malformed",
                  PARSE_MAX_LINES);
     }
+    #undef PARSE_MAX_LINE_LEN
 
     /* Must have at least a name — reject empty-name cards early so
        callers don't waste time on useless entities. */
     if (card->name[0] == '\0') {
-        log_warn("npc_parse_create: parsed card has empty name — discarding");
+        LOG_W("npc_parse_create: parsed card has empty name — discarding");
         return false;
     }
 
-    log_info("npc_parse_create: parsed '%s' (age=%d, %d skills, %d items)",
+    LOG_D("npc_parse_create: parsed '%s' (age=%d, %d skills, %d items)",
              card->name, card->age, card->skill_count, card->item_count);
     return true;
     #undef PARSE_MAX_LINES
@@ -439,6 +443,9 @@ void npc_cache_temps(NpcManager *mgr, const char *location_key)
     memset(c, 0, sizeof(*c));
     strncpy(c->location, location_key, MAX_NPC_LOC - 1);
     c->location[MAX_NPC_LOC - 1] = '\0';
+    /* location_key comes from snprintf in npc_make_location_key — guaranteed
+       null-terminated, so safe_strcpy could be used. Kept as strncpy for
+       belt-and-suspenders safety against future callers. */
 
     int n = mgr->temp_count;
     if (n > MAX_NPC_PER_CACHE) n = MAX_NPC_PER_CACHE;

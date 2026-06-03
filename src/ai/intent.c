@@ -1,4 +1,5 @@
 #include "intent.h"
+#include "json.h"
 #include "log.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -255,49 +256,22 @@ bool intent_recognize_level3(ApiClient *api, const char *user_input,
         return false;
     }
 
-    /* Parse JSON response */
+    /* Parse JSON response using the shared json.c utilities (fixes Bug #3:
+       fragile hand-written parsing replaced with validated extraction). */
     char intent_str[32] = {0};
     char target_str[64] = {0};
+    int conf_int = 0;  /* json_get_int reads int, we'll convert to float */
     float conf = 0.0f;
 
-    /* Simple JSON parsing */
-    {
-        const char *p = strstr(raw, "\"intent\"");
-        if (p) {
-            p = strchr(p, ':');
-            if (p) {
-                p++;
-                while (*p == ' ' || *p == '"') p++;
-                int i = 0;
-                while (*p && *p != '"' && *p != ',' && *p != '}' && i < 31) {
-                    intent_str[i++] = *p++;
-                }
-                intent_str[i] = '\0';
-            }
-        }
-    }
-    {
-        const char *p = strstr(raw, "\"target\"");
-        if (p) {
-            p = strchr(p, ':');
-            if (p) {
-                p++;
-                while (*p == ' ' || *p == '"') p++;
-                int i = 0;
-                while (*p && *p != '"' && *p != ',' && *p != '}' && i < 63) {
-                    target_str[i++] = *p++;
-                }
-                target_str[i] = '\0';
-            }
-        }
-    }
-    {
-        const char *p = strstr(raw, "\"confidence\"");
-        if (p) {
-            p = strchr(p, ':');
-            if (p) {
-                conf = (float)atof(p + 1);
-            }
+    json_get_str(raw, "intent", intent_str, sizeof(intent_str));
+    json_get_str(raw, "target", target_str, sizeof(target_str));
+    if (json_get_int(raw, "confidence", &conf_int)) {
+        conf = (float)conf_int;
+    } else {
+        /* Try parsing as float via string extraction */
+        char conf_str[32];
+        if (json_get_str(raw, "confidence", conf_str, sizeof(conf_str))) {
+            conf = (float)atof(conf_str);
         }
     }
 
@@ -336,27 +310,27 @@ IntentResult intent_recognize(ApiClient *api, const char *user_input,
 
     /* Level 1: keyword matching */
     float conf = intent_recognize_level1(user_input, known_names, &result);
-    log_info("Intent L1: type=%s conf=%.2f target=%.20s",
+    LOG_I("Intent L1: type=%s conf=%.2f target=%.20s",
              intent_type_str(result.type), conf,
              result.target[0] ? result.target : "(none)");
 
     if (conf >= INTENT_MIN_CONFIDENCE) {
         /* Level 1 succeeded */
-        log_info("Intent L1: SUFFICIENT (>=%.2f), skipping L3", INTENT_MIN_CONFIDENCE);
+        LOG_I("Intent L1: SUFFICIENT (>=%.2f), skipping L3", INTENT_MIN_CONFIDENCE);
         return result;
     }
 
     /* Level 1 insufficient — try Level 3 (main model) */
-    log_info("Intent L1: insufficient (%.2f < %.2f), falling back to L3...", conf, INTENT_MIN_CONFIDENCE);
+    LOG_I("Intent L1: insufficient (%.2f < %.2f), falling back to L3...", conf, INTENT_MIN_CONFIDENCE);
     if (api) {
         IntentResult l3_result;
         if (intent_recognize_level3(api, user_input, game_context, &l3_result)) {
-            log_info("Intent L3: type=%s conf=%.2f target=%.20s",
+            LOG_I("Intent L3: type=%s conf=%.2f target=%.20s",
                      intent_type_str(l3_result.type), l3_result.confidence,
                      l3_result.target[0] ? l3_result.target : "(none)");
             return l3_result;
         }
-        log_warn("Intent L3: AI call FAILED, using L1 fallback");
+        LOG_W("Intent L3: AI call FAILED, using L1 fallback");
     }
 
     /* Fall through: return Level 1 result even if low confidence */

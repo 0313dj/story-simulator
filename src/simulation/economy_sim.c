@@ -129,6 +129,9 @@ void econ_sim_tick(WorldState *ws, EventLog *events, long long tick)
     set_int_var(ws, ECON_VAR_SUPPLY,      supply);
     set_int_var(ws, ECON_VAR_DEMAND,      demand);
 
+    LOG_I("Economy tick: prosperity=%d inflation=%d trade_vol=%d price_lvl=%d",
+          prosperity, inflation, trade_vol, price_lvl);
+
     /* Log significant changes */
     if (abs(prosperity - 50) > 30) {
         event_push(events, tick, -1, -1, EVENT_WORLD_TICK,

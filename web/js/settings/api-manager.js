@@ -39,9 +39,19 @@ export async function showApiManager() {
     if (parts.length >= 3) { $('api-ep').value = parts[1]; $('api-model').value = parts[2]; $('api-name').value = parts[0]; }
   };
   $('api-save-btn').onclick = async () => {
-    const r = await saveProfile({ name: $('api-name').value, endpoint: $('api-ep').value, apiKey: $('api-key').value, model: $('api-model').value });
-    if (r.ok) { EventBus.emit('chat:add', { role: 'system', text: 'API 配置已保存，已自动切换为当前配置' }); hideModal(); }
-    else EventBus.emit('chat:add', { role: 'system', text: '保存失败: ' + r.error });
+    const apiKey = $('api-key').value.trim();
+    if (!apiKey) {
+      EventBus.emit('chat:add', { role: 'system', text: '请输入 API Key' });
+      return;
+    }
+    const r = await saveProfile({
+      name: $('api-name').value,
+      endpoint: $('api-ep').value,
+      apiKey,
+      model: $('api-model').value
+    });
+    if (r.ok) { hideModal(); }
+    else { EventBus.emit('chat:add', { role: 'system', text: '保存失败: ' + r.error }); }
   };
 
   setTimeout(() => {

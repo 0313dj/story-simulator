@@ -209,8 +209,7 @@ static bool world_get_str(const WorldState *ws, const char *name,
         if (strcmp(ws->variables[i].name, vname) == 0) {
             if (ws->variables[i].type == VAR_STRING ||
                 ws->variables[i].type == VAR_ENUM) {
-                strncpy(out_str, ws->variables[i].str_val, out_size - 1);
-                out_str[out_size - 1] = '\0';
+                safe_strcpy(out_str, ws->variables[i].str_val, out_size);
                 return true;
             }
             /* Also convert int/float/bool to string for comparison */
@@ -300,22 +299,22 @@ static void lex_next(Lexer *l)
     /* Two-char operators */
     if (l->p[0] == '=' && l->p[1] == '=') {
         l->current.type = TK_EQ;
-        strcpy(l->current.text, "==");
+        safe_strcpy(l->current.text, "==", sizeof(l->current.text));
         l->p += 2; return;
     }
     if (l->p[0] == '!' && l->p[1] == '=') {
         l->current.type = TK_NEQ;
-        strcpy(l->current.text, "!=");
+        safe_strcpy(l->current.text, "!=", sizeof(l->current.text));
         l->p += 2; return;
     }
     if (l->p[0] == '>' && l->p[1] == '=') {
         l->current.type = TK_GTE;
-        strcpy(l->current.text, ">=");
+        safe_strcpy(l->current.text, ">=", sizeof(l->current.text));
         l->p += 2; return;
     }
     if (l->p[0] == '<' && l->p[1] == '=') {
         l->current.type = TK_LTE;
-        strcpy(l->current.text, "<=");
+        safe_strcpy(l->current.text, "<=", sizeof(l->current.text));
         l->p += 2; return;
     }
 
@@ -524,6 +523,8 @@ static bool parse_atom(Lexer *l, const CharacterCard *entity, const WorldState *
            evaluated — return false instead of silently treating as 0.
            This prevents rules from accidentally matching on typos or
            non-existent fields. */
+        LOG_W("RuleEngine: condition field not found '%s' on entity '%s'",
+              left_field, entity->name);
         return false;
     }
 
@@ -879,11 +880,10 @@ int ap_parse_changes_text(const char *changes_text, ActionProposal *ap)
 {
     if (!changes_text || !*changes_text || !ap) return 0;
 
-    log_info("ap_parse_changes_text: input length=%d, text=%.200s", (int)strlen(changes_text), changes_text);
+    LOG_D("ap_parse_changes_text: input length=%d, text=%.200s", (int)strlen(changes_text), changes_text);
 
     char buf[2048];
-    strncpy(buf, changes_text, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
+    safe_strcpy(buf, changes_text, sizeof(buf));
 
     int parsed = 0;
     char *line = buf;
@@ -1053,18 +1053,57 @@ static void rule_effect_to_cs(const RuleEffect *e, const char *entity_name,
 /* ═══════════════════════════════════════════════════════════════
    Main pipeline: Proposal → Rule Engine → ChangeSet → Apply
 
-   TWO-PHASE design (fixes Bug #2: rule effects could be overwritten
-   by original changes because re_apply_effects modified entities
-   directly before cs_apply re-applied the original changes):
+   CASCADING SIMULATED-STATE design (fixes Bug #13 and Bug #27):
 
+   Bug #27: Phase B originally evaluated rules against the CURRENT entity
+   state, not the state that would result from applying the ChangeSet.
+   This meant rules like "money < 0 → status=SAD" would not fire when
+   a proposal reduced money below 0, because the entity's money field
+   hadn't been changed yet.
+
+   Bug #13: A separate post-apply pass in apply_response re-evaluated ALL
+   rules and applied effects directly, causing rules that already fired
+   during Phase B to fire again (double application).
+
+   NEW DESIGN:
    Phase A — Collect: convert all ActionProposal entries into ChangeSetFull.
-   Phase B — Validate: evaluate rules against affected entities in their
-              CURRENT state, and append rule-triggered effects to the SAME
-              ChangeSetFull (later entries take precedence over earlier ones).
-
-   The caller then calls cs_apply() ONCE, applying all changes atomically.
-   A post-apply rule pass (in apply_response) handles cascading effects.
+   Phase B — Cascade: up to MAX_CASCADE iterations:
+              1. Create temp copies of affected entities
+              2. Simulate applying the current ChangeSet to temp copies
+              3. Evaluate rules against the SIMULATED state
+              4. Append newly-triggered rule effects to ChangeSetFull
+              5. Track fired (rule_idx, entity) pairs to prevent re-fire
+              6. If no new rules fired, cascade converged → break
+   The caller calls cs_apply() ONCE. No post-apply pass needed.
    ═══════════════════════════════════════════════════════════════ */
+
+#define MAX_CASCADE 3
+
+/* Track which (rule_index, entity_name) pairs have already fired */
+typedef struct {
+    int  rule_idx;
+    char entity[64];
+} FiredEntry;
+
+static bool fired_contains(FiredEntry *fired, int fired_count,
+                           int rule_idx, const char *entity)
+{
+    for (int i = 0; i < fired_count; i++) {
+        if (fired[i].rule_idx == rule_idx &&
+            strcmp(fired[i].entity, entity) == 0)
+            return true;
+    }
+    return false;
+}
+
+static void fired_add(FiredEntry *fired, int *fired_count,
+                      int rule_idx, const char *entity)
+{
+    if (*fired_count >= 256) return;  /* safety cap */
+    fired[*fired_count].rule_idx = rule_idx;
+    safe_strcpy(fired[*fired_count].entity, entity, 64);
+    (*fired_count)++;
+}
 
 int re_process_proposal(const RuleEngine *re, const ActionProposal *ap,
                         CharacterCard *player, CharacterCard *npcs,
@@ -1075,10 +1114,10 @@ int re_process_proposal(const RuleEngine *re, const ActionProposal *ap,
     int rules_fired = 0;
 
     if (!ap || ap->count == 0) {
-        log_info("RuleEngine: no actions to process");
+        LOG_D("RuleEngine: no actions to process");
         return 0;
     }
-    log_info("RuleEngine: processing %d actions...", ap->count);
+    LOG_D("RuleEngine: processing %d actions...", ap->count);
 
     /* ── Phase A: Collect all proposal entries into ChangeSetFull ── */
     for (int i = 0; i < ap->count; i++) {
@@ -1102,47 +1141,100 @@ int re_process_proposal(const RuleEngine *re, const ActionProposal *ap,
         }
     }
 
-    /* ── Phase B: Evaluate rules against affected entities (in current state)
-                  and append rule-triggered effects to the ChangeSetFull.
-                  Later entries take precedence over earlier ones in cs_apply,
-                  so rule effects override the original proposal. ── */
-    for (int i = 0; i < ap->count; i++) {
-        const ActionProposalEntry *e = &ap->actions[i];
-        CharacterCard *target = cs_find_entity(e->entity, player, npcs, npc_count);
-        if (!target) continue;
+    /* ── Phase B: Cascading rule evaluation with simulated state ── */
+    FiredEntry fired[256];
+    int fired_count = 0;
 
-        /* Evaluate rules against this entity in its CURRENT state */
-        int hit_ids[RE_MAX_RULES];
-        int n_hits = re_evaluate_all(re, target, ws, hit_ids, RE_MAX_RULES);
+    for (int cascade = 0; cascade < MAX_CASCADE; cascade++) {
+        int new_fires = 0;
 
-        for (int j = 0; j < re->count; j++) {
-            if (!re->rules[j].enabled) continue;
-            bool hit = false;
-            for (int k = 0; k < n_hits; k++) {
-                if (hit_ids[k] == re->rules[j].id) { hit = true; break; }
-            }
-            if (hit) {
-                /* Append rule effects to ChangeSetFull (later entries win) */
-                for (int ef = 0; ef < re->rules[j].effect_count; ef++) {
-                    rule_effect_to_cs(&re->rules[j].effects[ef],
-                                      e->entity, out_cs);
+        /* Create temp copies of player + all NPCs for simulation.
+           We copy the full CharacterCard so that cs_apply (which
+           modifies entities in-place) works on the copies. */
+        CharacterCard *tmp_player = malloc(sizeof(CharacterCard));
+        CharacterCard *tmp_npcs = malloc((size_t)npc_count * sizeof(CharacterCard));
+        if (!tmp_player || !tmp_npcs) {
+            free(tmp_player);
+            free(tmp_npcs);
+            LOG_E("RuleEngine: malloc failed for simulation copies");
+            break;
+        }
+        memcpy(tmp_player, player, sizeof(CharacterCard));
+        if (npc_count > 0)
+            memcpy(tmp_npcs, npcs, (size_t)npc_count * sizeof(CharacterCard));
+
+        /* Simulate: apply current ChangeSet to temp copies.
+           Pass NULL for events — we don't want simulated side effects. */
+        cs_apply(out_cs, tmp_player, tmp_npcs, npc_count, NULL, tick);
+
+        /* Evaluate rules against the SIMULATED state for each entity
+           mentioned in the proposals. */
+        for (int i = 0; i < ap->count; i++) {
+            const char *ent_name = ap->actions[i].entity;
+            CharacterCard *sim_entity = cs_find_entity(ent_name, tmp_player,
+                                                        tmp_npcs, npc_count);
+            if (!sim_entity) continue;
+
+            int hit_ids[RE_MAX_RULES];
+            int n_hits = re_evaluate_all(re, sim_entity, ws, hit_ids, RE_MAX_RULES);
+
+            for (int j = 0; j < re->count; j++) {
+                if (!re->rules[j].enabled) continue;
+
+                /* Skip if this (rule, entity) pair already fired */
+                if (fired_contains(fired, fired_count, j, ent_name))
+                    continue;
+
+                /* Check if this rule hit */
+                bool hit = false;
+                for (int k = 0; k < n_hits; k++) {
+                    if (hit_ids[k] == re->rules[j].id) { hit = true; break; }
                 }
-                rules_fired++;
+
+                if (hit) {
+                    /* Append rule effects to ChangeSetFull.
+                       Later entries take precedence in cs_apply. */
+                    for (int ef = 0; ef < re->rules[j].effect_count; ef++) {
+                        rule_effect_to_cs(&re->rules[j].effects[ef],
+                                          ent_name, out_cs);
+                    }
+                    fired_add(fired, &fired_count, j, ent_name);
+                    rules_fired++;
+                    new_fires++;
+                }
             }
-            if (events) {
-                event_push(events, tick, -1, -1,
-                    hit ? EVENT_RULE_HIT : EVENT_SYSTEM,
-                    "{\"rule_id\":%d,\"condition\":\"%.128s\",\"hit\":%s,\"entity\":\"%s\"}",
-                    re->rules[j].id, re->rules[j].condition,
-                    hit ? "true" : "false", target->name);
-            }
+        }
+
+        free(tmp_player);
+        free(tmp_npcs);
+
+        if (new_fires == 0) {
+            LOG_D("RuleEngine: cascade converged after %d iteration(s)",
+                     cascade + 1);
+            break;
+        }
+        LOG_D("RuleEngine: cascade iteration %d — %d new rule(s) fired",
+                 cascade + 1, new_fires);
+    }
+
+    /* Log rule evaluation events for diagnostics */
+    if (events) {
+        for (int i = 0; i < fired_count; i++) {
+            const Rule *r = &re->rules[fired[i].rule_idx];
+            CharacterCard *target = cs_find_entity(fired[i].entity, player,
+                                                    npcs, npc_count);
+            event_push(events, tick, -1, -1, EVENT_RULE_HIT,
+                "{\"rule_id\":%d,\"condition\":\"%.128s\",\"hit\":true,\"entity\":\"%s\"}",
+                r->id, r->condition,
+                target ? target->name : fired[i].entity);
         }
     }
 
-    log_info("RuleEngine: done — %d actions, %d rules fired, %d changes in ChangeSet",
+    LOG_I("RuleEngine: done — %d actions, %d rules fired, %d changes in ChangeSet",
              ap->count, rules_fired, out_cs->count);
     return rules_fired;
 }
+
 
 
 

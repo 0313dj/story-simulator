@@ -53,7 +53,7 @@ typedef struct {
 } Location;
 
 /* 环境总成 */
-typedef struct {
+typedef struct Environment {
     Weather   weather;
     GameTime  time;
     Location  location;
